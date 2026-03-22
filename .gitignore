@@ -1,0 +1,17 @@
+# Build outputs
+bin/
+obj/
+
+# Visual Studio / Rider
+.vs/
+*.user
+*.suo
+.idea/
+
+# NuGet packages
+packages/
+*.nupkg
+
+# OS artefacts
+.DS_Store
+Thumbs.db
