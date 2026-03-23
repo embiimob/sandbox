@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
-using System.Text.RegularExpressions;
+using System.Numerics;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -28,7 +28,7 @@ namespace BitFossilIndexer
         }
     }
 
-    /// <summary>Result of processing a single transaction folder.</summary>
+    /// <summary>Result of a single p2fk.io API call.</summary>
     internal record TransactionResult(
         string TxId,
         ApiTarget Target,
@@ -36,124 +36,216 @@ namespace BitFossilIndexer
         string ResponseBody,
         string ErrorMessage);
 
-    internal static class BlockchainDetector
+    /// <summary>Outcome of processing one transaction folder (API call or skip).</summary>
+    internal record ProcessOutcome(
+        TransactionResult? ApiResult,
+        bool Skipped,
+        string SkipReason,
+        bool LastCallWasFallback);
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Base58 decoder (needed to extract the version byte from an address)
+    // ──────────────────────────────────────────────────────────────────────────
+    internal static class Base58
     {
-        // Fallback order when a folder is empty or no blockchain can be identified.
-        private static readonly ApiTarget[] FallbackOrder =
+        private const string Alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+        private static readonly int[] CharMap = new int[128];
+
+        static Base58()
+        {
+            Array.Fill(CharMap, -1);
+            for (int i = 0; i < Alphabet.Length; i++)
+                CharMap[Alphabet[i]] = i;
+        }
+
+        /// <summary>
+        /// Decodes a Base58Check-encoded address and returns the raw bytes
+        /// (version byte + payload + 4-byte checksum). Returns <c>null</c> if
+        /// the string contains characters outside the Base58 alphabet.
+        /// </summary>
+        public static byte[]? Decode(string s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return null;
+            s = s.Trim();
+
+            var value = BigInteger.Zero;
+            foreach (char c in s)
+            {
+                if (c >= 128 || CharMap[c] < 0) return null;
+                value = value * 58 + CharMap[c];
+            }
+
+            // Convert BigInteger to big-endian byte array.
+            byte[] valueBytes = value.ToByteArray(isUnsigned: true, isBigEndian: true);
+
+            // Each leading '1' in the input represents a leading zero byte.
+            int leadingZeros = 0;
+            foreach (char c in s)
+            {
+                if (c == '1') leadingZeros++;
+                else break;
+            }
+
+            byte[] result = new byte[leadingZeros + valueBytes.Length];
+            valueBytes.CopyTo(result, leadingZeros);
+            return result;
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Address-based blockchain detection via the "ADD" file
+    // ──────────────────────────────────────────────────────────────────────────
+    internal static class AddressDetector
+    {
+        /// <summary>
+        /// Maps the Base58Check version byte (first byte of decoded address) to the
+        /// matching <see cref="ApiTarget"/>.
+        ///
+        /// Version bytes (P2PKH):
+        ///   0x00 (  0) – Bitcoin mainnet
+        ///   0x6F (111) – Bitcoin testnet3
+        ///   0x30 ( 48) – Litecoin
+        ///   0x1E ( 30) – Dogecoin
+        ///   0x32 ( 50) – Mazacoin
+        /// </summary>
+        public static readonly IReadOnlyDictionary<byte, ApiTarget> VersionByteMap =
+            new Dictionary<byte, ApiTarget>
+            {
+                [0x00] = new ApiTarget("BTC", true),   // Bitcoin mainnet
+                [0x6F] = new ApiTarget("BTC", false),  // Bitcoin testnet3
+                [0x30] = new ApiTarget("LTC", true),   // Litecoin
+                [0x1E] = new ApiTarget("DOG", true),   // Dogecoin
+                [0x32] = new ApiTarget("MZC", true),   // Mazacoin
+            };
+
+        /// <summary>
+        /// Canonical fallback order used when no ADD file is present or its address
+        /// cannot be recognised: BTC testnet → BTC mainnet → MZC → DOG → LTC.
+        /// </summary>
+        public static readonly IReadOnlyList<ApiTarget> FallbackOrder =
         [
-            new("BTC", false),   // BTC testnet first
-            new("BTC", true),    // BTC mainnet
-            new("MZC", true),    // Mazacoin
-            new("DOG", true),    // Dogecoin
-            new("LTC", true),    // Litecoin
+            new("BTC", false),  // Bitcoin testnet
+            new("BTC", true),   // Bitcoin mainnet
+            new("MZC", true),   // Mazacoin
+            new("DOG", true),   // Dogecoin
+            new("LTC", true),   // Litecoin
         ];
 
         /// <summary>
-        /// Parse the index.html inside a transaction folder and return the best
-        /// matching <see cref="ApiTarget"/>.  Returns <c>null</c> when the HTML
-        /// does not contain a recognisable blockchain keyword.
+        /// Reads the BitFossil "ADD" file from the transaction folder, decodes the
+        /// first address it finds, and returns the corresponding
+        /// <see cref="ApiTarget"/>. Returns <c>null</c> when the file is absent,
+        /// empty, or contains only unrecognised addresses.
         /// </summary>
-        public static ApiTarget? DetectFromHtml(string html)
+        public static ApiTarget? DetectFromAddFile(string folderPath)
         {
-            if (string.IsNullOrWhiteSpace(html))
+            // Prefer "ADD" (no extension); fall back to "ADD.txt".
+            string addPath = Path.Combine(folderPath, "ADD");
+            if (!File.Exists(addPath))
+                addPath = Path.Combine(folderPath, "ADD.txt");
+            if (!File.Exists(addPath))
                 return null;
 
-            string lower = html.ToLowerInvariant();
+            try
+            {
+                foreach (string raw in File.ReadLines(addPath))
+                {
+                    string line = raw.Trim();
+                    if (string.IsNullOrEmpty(line)) continue;
 
-            // Dogecoin – check before generic "coin" patterns
-            if (lower.Contains("dogecoin") || ContainsWord(lower, "doge") || ContainsWord(lower, "dog"))
-                return new ApiTarget("DOG", true);
+                    // Lines may be tab/space/comma-separated; take the first token.
+                    string address = line.Split([' ', '\t', ','], 2)[0].Trim();
+                    if (string.IsNullOrEmpty(address)) continue;
 
-            // Litecoin
-            if (lower.Contains("litecoin") || ContainsWord(lower, "ltc"))
-                return new ApiTarget("LTC", true);
-
-            // Mazacoin
-            if (lower.Contains("mazacoin") || ContainsWord(lower, "mzc") || ContainsWord(lower, "maza"))
-                return new ApiTarget("MZC", true);
-
-            // Bitcoin testnet (must come before plain bitcoin)
-            if (lower.Contains("testnet") || lower.Contains("bitcoin test") || lower.Contains("btc test"))
-                return new ApiTarget("BTC", false);
-
-            // Bitcoin mainnet
-            if (lower.Contains("bitcoin") || ContainsWord(lower, "btc"))
-                return new ApiTarget("BTC", true);
+                    byte[]? decoded = Base58.Decode(address);
+                    if (decoded is { Length: >= 1 } &&
+                        VersionByteMap.TryGetValue(decoded[0], out ApiTarget? target))
+                        return target;
+                }
+            }
+            catch (IOException) { /* treat as missing */ }
 
             return null;
         }
 
-        /// <summary>Returns the ordered fallback targets to try when no HTML hint exists.</summary>
-        public static IReadOnlyList<ApiTarget> GetFallbackOrder() => FallbackOrder;
-
-        private static bool ContainsWord(string text, string word)
-        {
-            // Quick word-boundary check using regex.
-            return Regex.IsMatch(text, $@"\b{Regex.Escape(word)}\b", RegexOptions.IgnoreCase);
-        }
+        /// <summary>
+        /// Returns only the fallback targets that appear in <paramref name="enabled"/>,
+        /// preserving the canonical order.
+        /// </summary>
+        public static IEnumerable<ApiTarget> GetEnabledFallbacks(IReadOnlySet<ApiTarget> enabled)
+            => FallbackOrder.Where(enabled.Contains);
     }
 
+    // ──────────────────────────────────────────────────────────────────────────
+    // Transaction processor
+    // ──────────────────────────────────────────────────────────────────────────
     internal class TransactionProcessor
     {
-        // Singleton HttpClient is intentional: reusing a single instance across the
-        // application lifetime avoids socket exhaustion and respects connection pooling.
-        // It is never disposed because its lifetime matches the application lifetime.
+        // Singleton HttpClient: reusing one instance avoids socket exhaustion and
+        // respects connection pooling. Its lifetime matches the application lifetime.
         private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(30) };
 
         /// <summary>
-        /// Processes one transaction folder and returns the API result.
-        /// The caller is responsible for the 2-second inter-transaction delay;
-        /// this method adds its own 2-second delays only between fallback API
-        /// attempts so that every p2fk.io call is individually rate-limited.
-        /// Returns <c>triedFallback = true</c> when the last API call was part
-        /// of a fallback sequence (the caller can then skip its own delay because
-        /// the last fallback attempt was already followed by a delay—or not, if
-        /// the fallback succeeded on the last candidate).
+        /// Processes one transaction folder:
+        /// <list type="number">
+        ///   <item>Read the "ADD" file and decode the first address to identify the chain.</item>
+        ///   <item>If the detected chain is disabled → return a <c>Skipped</c> outcome.</item>
+        ///   <item>If no ADD file / unrecognised address → probe enabled chains in the
+        ///         canonical fallback order (BTC testnet → BTC mainnet → MZC → DOG → LTC),
+        ///         stopping as soon as one succeeds.</item>
+        /// </list>
+        /// Every p2fk.io call is individually rate-limited by the caller; this method
+        /// inserts its own 2-second gaps only between consecutive fallback attempts.
         /// </summary>
-        public static async Task<(TransactionResult result, bool lastCallWasFallback)> ProcessAsync(
+        public static async Task<ProcessOutcome> ProcessAsync(
             string txId,
             string folderPath,
+            IReadOnlySet<ApiTarget> enabledChains,
             CancellationToken ct)
         {
-            // --- 1. Determine target blockchain ---
-            ApiTarget? target = null;
+            if (enabledChains.Count == 0)
+                return new ProcessOutcome(null, true, "No chains enabled.", false);
 
-            string indexPath = Path.Combine(folderPath, "index.html");
-            bool isEmpty = !Directory.EnumerateFileSystemEntries(folderPath).Any();
+            // --- 1. Try to identify the blockchain from the ADD file ---
+            ApiTarget? detected = AddressDetector.DetectFromAddFile(folderPath);
 
-            if (!isEmpty && File.Exists(indexPath))
+            if (detected != null)
             {
-                string html = await File.ReadAllTextAsync(indexPath, ct);
-                target = BlockchainDetector.DetectFromHtml(html);
+                // Chain identified but filtered out by the user.
+                if (!enabledChains.Contains(detected))
+                    return new ProcessOutcome(null, true, $"Chain {detected.Label} is not enabled.", false);
+
+                // Single targeted API call.
+                var (ok, body, err) = await CallApiAsync(txId, detected, ct);
+                return new ProcessOutcome(
+                    new TransactionResult(txId, detected, ok, body, err),
+                    false, string.Empty, false);
             }
 
-            // --- 2. If no hint, try fallback order until one succeeds ---
-            if (target == null)
+            // --- 2. No ADD file or unrecognised address – try enabled fallbacks ---
+            var fallbacks = AddressDetector.GetEnabledFallbacks(enabledChains).ToList();
+
+            for (int i = 0; i < fallbacks.Count; i++)
             {
-                var fallbacks = BlockchainDetector.GetFallbackOrder();
-                for (int i = 0; i < fallbacks.Count; i++)
-                {
-                    ct.ThrowIfCancellationRequested();
-                    ApiTarget candidate = fallbacks[i];
-                    var (ok, body, err) = await CallApiAsync(txId, candidate, ct);
-                    if (ok)
-                        return (new TransactionResult(txId, candidate, true, body, string.Empty), true);
+                ct.ThrowIfCancellationRequested();
+                ApiTarget candidate = fallbacks[i];
+                var (ok, body, err) = await CallApiAsync(txId, candidate, ct);
+                if (ok)
+                    return new ProcessOutcome(
+                        new TransactionResult(txId, candidate, true, body, string.Empty),
+                        false, string.Empty, true);
 
-                    // Rate-limit every failed fallback call (not after the last one to
-                    // avoid doubling with the outer per-transaction delay).
-                    if (i < fallbacks.Count - 1)
-                        await Task.Delay(TimeSpan.FromSeconds(2), ct);
-                }
-
-                return (new TransactionResult(txId, new ApiTarget("BTC", false), false,
-                    string.Empty, "No matching blockchain found in fallback order."), true);
+                // Rate-limit between failed fallback attempts (not after the last one).
+                if (i < fallbacks.Count - 1)
+                    await Task.Delay(TimeSpan.FromSeconds(2), ct);
             }
 
-            // --- 3. Known target – single API call ---
-            {
-                var (ok, body, err) = await CallApiAsync(txId, target, ct);
-                return (new TransactionResult(txId, target, ok, body, err), false);
-            }
+            // All enabled fallbacks exhausted.
+            ApiTarget lastTried = fallbacks.Count > 0 ? fallbacks[^1] : new ApiTarget("BTC", false);
+            return new ProcessOutcome(
+                new TransactionResult(txId, lastTried, false, string.Empty,
+                    "No matching blockchain found in fallback order."),
+                false, string.Empty, true);
         }
 
         private static async Task<(bool ok, string body, string error)> CallApiAsync(
@@ -164,7 +256,8 @@ namespace BitFossilIndexer
             {
                 using HttpResponseMessage resp = await Http.GetAsync(url, ct);
                 string body = await resp.Content.ReadAsStringAsync(ct);
-                return (resp.IsSuccessStatusCode, body, resp.IsSuccessStatusCode ? string.Empty : $"HTTP {(int)resp.StatusCode}");
+                return (resp.IsSuccessStatusCode, body,
+                    resp.IsSuccessStatusCode ? string.Empty : $"HTTP {(int)resp.StatusCode}");
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

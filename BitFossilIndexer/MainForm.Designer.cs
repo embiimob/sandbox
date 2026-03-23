@@ -10,14 +10,28 @@ namespace BitFossilIndexer
         private Panel pnlHeader = null!;
         private Label lblTitle = null!;
         private Label lblSubtitle = null!;
+
         private Panel pnlControls = null!;
         private Label lblRootLabel = null!;
         private TextBox txtRoot = null!;
         private Button btnBrowse = null!;
         private Button btnStart = null!;
         private Button btnClear = null!;
+
+        // Chain-filter panel
+        private Panel pnlChainFilter = null!;
+        private Label lblChainsLabel = null!;
+        private CheckBox chkBtcTestnet = null!;
+        private CheckBox chkBtcMainnet = null!;
+        private CheckBox chkMzc = null!;
+        private CheckBox chkDog = null!;
+        private CheckBox chkLtc = null!;
+        private Button btnPause = null!;
+        private Label lblTotalFolders = null!;
+
         private Panel pnlLog = null!;
         private RichTextBox rtbLog = null!;
+
         private Panel pnlFooter = null!;
         private Label lblStatus = null!;
         private Label lblProgress = null!;
@@ -29,8 +43,8 @@ namespace BitFossilIndexer
 
             // ── Form ────────────────────────────────────────────────────────
             Text = "BitFossil Indexer  ·  p2fk.io";
-            Size = new Size(1000, 720);
-            MinimumSize = new Size(800, 560);
+            Size = new Size(1050, 760);
+            MinimumSize = new Size(900, 600);
             StartPosition = FormStartPosition.CenterScreen;
             BackColor = ClrBackground;
             Icon = SystemIcons.Application;
@@ -41,7 +55,6 @@ namespace BitFossilIndexer
                 Dock = DockStyle.Top,
                 Height = 72,
                 BackColor = ClrPanel,
-                Padding = new Padding(16, 8, 16, 8)
             };
 
             lblTitle = new Label
@@ -55,7 +68,7 @@ namespace BitFossilIndexer
 
             lblSubtitle = new Label
             {
-                Text = "Loads transaction roots into p2fk.io",
+                Text = "Loads transaction roots into p2fk.io — blockchain detected from ADD file version byte",
                 Font = new Font("Segoe UI", 9),
                 ForeColor = ClrMuted,
                 AutoSize = true,
@@ -64,18 +77,16 @@ namespace BitFossilIndexer
 
             pnlHeader.Controls.AddRange([lblTitle, lblSubtitle]);
 
-            // ── Controls panel ───────────────────────────────────────────────
+            // ── Controls panel (root path + start/stop/clear) ────────────────
             pnlControls = new Panel
             {
                 Dock = DockStyle.Top,
-                Height = 54,
+                Height = 50,
                 BackColor = ClrPanel,
-                Padding = new Padding(12, 8, 12, 8)
             };
-            // Thin separator at bottom
             pnlControls.Paint += (s, e) =>
             {
-                using var pen = new Pen(ClrAccent, 1);
+                using var pen = new Pen(Color.FromArgb(35, 35, 60), 1);
                 e.Graphics.DrawLine(pen, 0, pnlControls.Height - 1,
                     pnlControls.Width, pnlControls.Height - 1);
             };
@@ -97,7 +108,7 @@ namespace BitFossilIndexer
                 ForeColor = ClrWhite,
                 BorderStyle = BorderStyle.FixedSingle,
                 Location = new Point(100, 12),
-                Width = 520,
+                Width = 530,
                 Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top
             };
 
@@ -109,7 +120,7 @@ namespace BitFossilIndexer
                 ForeColor = ClrWhite,
                 FlatStyle = FlatStyle.Flat,
                 Size = new Size(36, 26),
-                Location = new Point(630, 12),
+                Location = new Point(640, 12),
                 Anchor = AnchorStyles.Right | AnchorStyles.Top,
                 Cursor = Cursors.Hand
             };
@@ -124,7 +135,7 @@ namespace BitFossilIndexer
                 ForeColor = Color.Black,
                 FlatStyle = FlatStyle.Flat,
                 Size = new Size(100, 26),
-                Location = new Point(676, 12),
+                Location = new Point(686, 12),
                 Anchor = AnchorStyles.Right | AnchorStyles.Top,
                 Cursor = Cursors.Hand
             };
@@ -139,7 +150,7 @@ namespace BitFossilIndexer
                 ForeColor = ClrWhite,
                 FlatStyle = FlatStyle.Flat,
                 Size = new Size(80, 26),
-                Location = new Point(786, 12),
+                Location = new Point(796, 12),
                 Anchor = AnchorStyles.Right | AnchorStyles.Top,
                 Cursor = Cursors.Hand
             };
@@ -149,13 +160,81 @@ namespace BitFossilIndexer
             pnlControls.Controls.AddRange([lblRootLabel, txtRoot, btnBrowse, btnStart, btnClear]);
             pnlControls.Resize += (s, e) =>
             {
-                // Keep text box stretching and buttons anchored right
-                int rightEdge = pnlControls.ClientSize.Width - 12;
-                btnClear.Left = rightEdge - btnClear.Width;
+                int right = pnlControls.ClientSize.Width - 12;
+                btnClear.Left = right - btnClear.Width;
                 btnStart.Left = btnClear.Left - btnStart.Width - 8;
                 btnBrowse.Left = btnStart.Left - btnBrowse.Width - 8;
                 txtRoot.Width = btnBrowse.Left - txtRoot.Left - 8;
             };
+
+            // ── Chain-filter panel ───────────────────────────────────────────
+            pnlChainFilter = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 50,
+                BackColor = ClrPanel,
+            };
+            pnlChainFilter.Paint += (s, e) =>
+            {
+                // Cyan separator at bottom
+                using var pen = new Pen(ClrAccent, 1);
+                e.Graphics.DrawLine(pen, 0, pnlChainFilter.Height - 1,
+                    pnlChainFilter.Width, pnlChainFilter.Height - 1);
+            };
+
+            lblChainsLabel = new Label
+            {
+                Text = "Chains:",
+                Font = new Font("Segoe UI", 9),
+                ForeColor = ClrMuted,
+                AutoSize = true,
+                Location = new Point(12, 16)
+            };
+
+            chkBtcTestnet = MakeChainCheckBox("BTC testnet", ChainColours["BTC"]);
+            chkBtcMainnet = MakeChainCheckBox("BTC mainnet", ChainColours["BTC"]);
+            chkMzc        = MakeChainCheckBox("MZC",         ChainColours["MZC"]);
+            chkDog        = MakeChainCheckBox("DOG",         ChainColours["DOG"]);
+            chkLtc        = MakeChainCheckBox("LTC",         ChainColours["LTC"]);
+
+            btnPause = new Button
+            {
+                Text = "⏸  Pause",
+                Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                BackColor = Color.FromArgb(40, 40, 70),
+                ForeColor = ClrWhite,
+                FlatStyle = FlatStyle.Flat,
+                Size = new Size(95, 26),
+                Location = new Point(800, 12),
+                Anchor = AnchorStyles.Right | AnchorStyles.Top,
+                Enabled = false,
+                Cursor = Cursors.Hand
+            };
+            btnPause.FlatAppearance.BorderColor = ClrMuted;
+            btnPause.Click += btnPause_Click;
+
+            lblTotalFolders = new Label
+            {
+                Text = "—",
+                Font = new Font("Consolas", 9),
+                ForeColor = ClrMuted,
+                AutoSize = false,
+                Width = 130,
+                TextAlign = ContentAlignment.MiddleRight,
+                Location = new Point(905, 15),
+                Anchor = AnchorStyles.Right | AnchorStyles.Top
+            };
+
+            pnlChainFilter.Controls.AddRange([
+                lblChainsLabel,
+                chkBtcTestnet, chkBtcMainnet, chkMzc, chkDog, chkLtc,
+                btnPause, lblTotalFolders
+            ]);
+
+            // Layout checkboxes and right-anchored controls
+            pnlChainFilter.Resize += (s, e) => LayoutChainFilter();
+            // Initial layout (fires after form loads)
+            Load += (s, e) => LayoutChainFilter();
 
             // ── Footer panel ─────────────────────────────────────────────────
             pnlFooter = new Panel
@@ -209,33 +288,79 @@ namespace BitFossilIndexer
                 Dock = DockStyle.Fill,
                 BackColor = Color.FromArgb(8, 8, 18),
                 ForeColor = ClrWhite,
-                Font = new Font("Cascadia Code", 9.5f, FontStyle.Regular,
-                    GraphicsUnit.Point, 0),
+                Font = new Font("Cascadia Code", 9.5f, FontStyle.Regular, GraphicsUnit.Point, 0),
                 BorderStyle = BorderStyle.None,
                 ReadOnly = true,
                 ScrollBars = RichTextBoxScrollBars.Vertical,
                 WordWrap = false,
                 DetectUrls = true
             };
-            // Fallback font if Cascadia Code is not installed
             if (rtbLog.Font.Name != "Cascadia Code")
                 rtbLog.Font = new Font("Consolas", 9.5f);
 
             pnlLog.Controls.Add(rtbLog);
 
-            // ── Assemble form ─────────────────────────────────────────────────
-            Controls.Add(pnlLog);       // Fill
-            Controls.Add(pnlControls);  // Top (added after header so it's below)
-            Controls.Add(pnlHeader);    // Top (first)
-            Controls.Add(pnlFooter);    // Bottom
+            // ── Assemble (Bottom → Fill → Top controls in reverse stacking order) ──
+            Controls.Add(pnlLog);           // Fill (middle)
+            Controls.Add(pnlChainFilter);   // Top – below pnlControls
+            Controls.Add(pnlControls);      // Top – below pnlHeader
+            Controls.Add(pnlHeader);        // Top – very top (last DockStyle.Top added)
+            Controls.Add(pnlFooter);        // Bottom
 
             ResumeLayout(false);
         }
 
-        // ── Styling helpers that require runtime values ───────────────────────
-        private void ApplyStyling()
+        // ── Helper: creates a styled chain-filter CheckBox ────────────────────
+        private static CheckBox MakeChainCheckBox(string name, Color fore)
         {
-            // Nothing additional needed – styling applied in InitializeComponent.
+            var cb = new CheckBox
+            {
+                Text = $"{name} (0)",
+                Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                ForeColor = fore,
+                BackColor = Color.Transparent,
+                FlatStyle = FlatStyle.Flat,
+                Checked = true,
+                AutoSize = true,
+                Cursor = Cursors.Hand,
+                Location = new Point(0, 0)  // positioned by LayoutChainFilter
+            };
+            return cb;
         }
+
+        // ── Chain-filter layout (called on Load and Resize) ───────────────────
+        private void LayoutChainFilter()
+        {
+            if (pnlChainFilter == null) return;
+
+            int panelW = pnlChainFilter.ClientSize.Width;
+            int cy = (pnlChainFilter.Height - 26) / 2;     // vertical centre for controls
+
+            // Right-anchored controls
+            lblTotalFolders.Left = panelW - 12 - lblTotalFolders.Width;
+            btnPause.Top = cy;
+            btnPause.Left = lblTotalFolders.Left - btnPause.Width - 8;
+
+            // Distribute checkboxes between the "Chains:" label and btnPause
+            int startX = lblChainsLabel.Right + 12;
+            int endX   = btnPause.Left - 8;
+            int avail  = endX - startX;
+
+            CheckBox[] boxes = [chkBtcTestnet, chkBtcMainnet, chkMzc, chkDog, chkLtc];
+            int gap = boxes.Length > 1 ? avail / boxes.Length : 0;
+            int x = startX;
+            foreach (var cb in boxes)
+            {
+                cb.Top  = cy;
+                cb.Left = x;
+                x += gap;
+            }
+
+            // Vertically centre the labels
+            lblChainsLabel.Top  = (pnlChainFilter.Height - lblChainsLabel.Height) / 2;
+            lblTotalFolders.Top = (pnlChainFilter.Height - lblTotalFolders.Height) / 2;
+        }
+
+        private void ApplyStyling() { }   // styling is applied inline above
     }
 }
