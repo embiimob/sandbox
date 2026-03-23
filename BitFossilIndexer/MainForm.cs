@@ -16,6 +16,7 @@ namespace BitFossilIndexer
         private CancellationTokenSource? _cts;
         private bool _running;
         private bool _paused;
+        private RateLimiter _rateLimiter = new();
 
         // Per-chain found-root counters (updated live)
         private readonly Dictionary<ApiTarget, int> _chainCounts = new();
@@ -171,9 +172,10 @@ namespace BitFossilIndexer
                 return;
             }
 
-            _cts     = new CancellationTokenSource();
-            _running = true;
-            _paused  = false;
+            _cts          = new CancellationTokenSource();
+            _running      = true;
+            _paused       = false;
+            _rateLimiter  = new RateLimiter();   // reset delay to 2000 ms for each new run
 
             ResetChainCountLabels();
 
@@ -304,7 +306,8 @@ namespace BitFossilIndexer
                 ProcessOutcome outcome;
                 try
                 {
-                    outcome = await TransactionProcessor.ProcessAsync(txId, folder, enabledChains, ct);
+                    outcome = await TransactionProcessor.ProcessAsync(
+                        txId, folder, enabledChains, _rateLimiter, ct);
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex)
@@ -314,7 +317,7 @@ namespace BitFossilIndexer
                     failed++;
                     UpdateProgress(done, folders.Length);
                     SetStatus($"Processing {done} / {folders.Length}…");
-                    await Task.Delay(TimeSpan.FromSeconds(2), ct);
+                    await _rateLimiter.WaitAsync(ct);
                     continue;
                 }
 
@@ -329,6 +332,13 @@ namespace BitFossilIndexer
                     SetStatus($"Processing {done} / {folders.Length}…");
                     // No API call was made, so no rate-limit delay needed.
                     continue;
+                }
+
+                // ── rate-limit notice (logged before the API result) ──────────
+                if (outcome.WasRateLimited)
+                {
+                    AppendLog("        ⚡ ", ClrYellow, bold: true);
+                    AppendLine($"Rate limited (429) — waited 10 s, retried.  Inter-call delay now {_rateLimiter.DelayMs} ms.", ClrYellow);
                 }
 
                 // ── API result ───────────────────────────────────────────────
@@ -367,10 +377,10 @@ namespace BitFossilIndexer
                 UpdateProgress(done, folders.Length);
                 SetStatus($"Processing {done} / {folders.Length}…");
 
-                // Rate-limit: at least 2 s between p2fk.io calls.
+                // Inter-transaction delay using the adaptive rate limiter.
                 // Fallback paths already inserted per-attempt delays internally.
                 if (done < folders.Length && !outcome.LastCallWasFallback)
-                    await Task.Delay(TimeSpan.FromSeconds(2), ct);
+                    await _rateLimiter.WaitAsync(ct);
             }
 
             // ── Summary ──────────────────────────────────────────────────────

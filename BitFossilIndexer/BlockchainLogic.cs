@@ -41,7 +41,26 @@ namespace BitFossilIndexer
         TransactionResult? ApiResult,
         bool Skipped,
         string SkipReason,
-        bool LastCallWasFallback);
+        bool LastCallWasFallback,
+        bool WasRateLimited);
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Adaptive rate limiter – tracks the current inter-call delay and increases
+    // it by 200 ms every time a 429 is received.
+    // ──────────────────────────────────────────────────────────────────────────
+    internal class RateLimiter
+    {
+        public const int InitialDelayMs = 2_000;
+        private const int IncrementMs  = 200;
+
+        public int DelayMs { get; private set; } = InitialDelayMs;
+
+        /// <summary>Permanently increase the inter-call delay by 200 ms.</summary>
+        public void Increase() => DelayMs += IncrementMs;
+
+        /// <summary>Waits for the current inter-call delay.</summary>
+        public Task WaitAsync(CancellationToken ct) => Task.Delay(DelayMs, ct);
+    }
 
     // ──────────────────────────────────────────────────────────────────────────
     // Base58 decoder (needed to extract the version byte from an address)
@@ -194,17 +213,20 @@ namespace BitFossilIndexer
         ///         canonical fallback order (BTC testnet → BTC mainnet → MZC → DOG → LTC),
         ///         stopping as soon as one succeeds.</item>
         /// </list>
-        /// Every p2fk.io call is individually rate-limited by the caller; this method
-        /// inserts its own 2-second gaps only between consecutive fallback attempts.
+        /// Every p2fk.io call is individually rate-limited by <paramref name="rateLimiter"/>;
+        /// this method inserts its own delays only between consecutive fallback attempts.
+        /// On HTTP 429 the limiter's delay is increased by 200 ms, the call waits 10 s,
+        /// and is retried once.
         /// </summary>
         public static async Task<ProcessOutcome> ProcessAsync(
             string txId,
             string folderPath,
             IReadOnlySet<ApiTarget> enabledChains,
+            RateLimiter rateLimiter,
             CancellationToken ct)
         {
             if (enabledChains.Count == 0)
-                return new ProcessOutcome(null, true, "No chains enabled.", false);
+                return new ProcessOutcome(null, true, "No chains enabled.", false, false);
 
             // --- 1. Try to identify the blockchain from the ADD file ---
             ApiTarget? detected = AddressDetector.DetectFromAddFile(folderPath);
@@ -213,31 +235,33 @@ namespace BitFossilIndexer
             {
                 // Chain identified but filtered out by the user.
                 if (!enabledChains.Contains(detected))
-                    return new ProcessOutcome(null, true, $"Chain {detected.Label} is not enabled.", false);
+                    return new ProcessOutcome(null, true, $"Chain {detected.Label} is not enabled.", false, false);
 
-                // Single targeted API call.
-                var (ok, body, err) = await CallApiAsync(txId, detected, ct);
+                // Single targeted API call (with 429 retry).
+                var (ok, body, err, rateLimited) = await CallWithRetryAsync(txId, detected, rateLimiter, ct);
                 return new ProcessOutcome(
                     new TransactionResult(txId, detected, ok, body, err),
-                    false, string.Empty, false);
+                    false, string.Empty, false, rateLimited);
             }
 
             // --- 2. No ADD file or unrecognised address – try enabled fallbacks ---
             var fallbacks = AddressDetector.GetEnabledFallbacks(enabledChains).ToList();
+            bool anyRateLimited = false;
 
             for (int i = 0; i < fallbacks.Count; i++)
             {
                 ct.ThrowIfCancellationRequested();
                 ApiTarget candidate = fallbacks[i];
-                var (ok, body, err) = await CallApiAsync(txId, candidate, ct);
+                var (ok, body, err, rateLimited) = await CallWithRetryAsync(txId, candidate, rateLimiter, ct);
+                if (rateLimited) anyRateLimited = true;
                 if (ok)
                     return new ProcessOutcome(
                         new TransactionResult(txId, candidate, true, body, string.Empty),
-                        false, string.Empty, true);
+                        false, string.Empty, true, anyRateLimited);
 
                 // Rate-limit between failed fallback attempts (not after the last one).
                 if (i < fallbacks.Count - 1)
-                    await Task.Delay(TimeSpan.FromSeconds(2), ct);
+                    await rateLimiter.WaitAsync(ct);
             }
 
             // All enabled fallbacks exhausted.
@@ -245,10 +269,29 @@ namespace BitFossilIndexer
             return new ProcessOutcome(
                 new TransactionResult(txId, lastTried, false, string.Empty,
                     "No matching blockchain found in fallback order."),
-                false, string.Empty, true);
+                false, string.Empty, true, anyRateLimited);
         }
 
-        private static async Task<(bool ok, string body, string error)> CallApiAsync(
+        /// <summary>
+        /// Calls the API once. If the response is HTTP 429, increases the rate-limiter
+        /// delay by 200 ms, waits 10 seconds, then retries the call exactly once.
+        /// Returns <c>wasRateLimited = true</c> when a 429 was encountered.
+        /// </summary>
+        private static async Task<(bool ok, string body, string error, bool wasRateLimited)>
+            CallWithRetryAsync(string txId, ApiTarget target, RateLimiter rateLimiter, CancellationToken ct)
+        {
+            var (ok, body, err, is429) = await CallApiAsync(txId, target, ct);
+            if (!is429)
+                return (ok, body, err, false);
+
+            // 429 received: increase delay, wait 10 s, retry once.
+            rateLimiter.Increase();
+            await Task.Delay(TimeSpan.FromSeconds(10), ct);
+            var (ok2, body2, err2, _) = await CallApiAsync(txId, target, ct);
+            return (ok2, body2, err2, true);
+        }
+
+        private static async Task<(bool ok, string body, string error, bool is429)> CallApiAsync(
             string txId, ApiTarget target, CancellationToken ct)
         {
             string url = target.BuildUrl(txId);
@@ -256,12 +299,14 @@ namespace BitFossilIndexer
             {
                 using HttpResponseMessage resp = await Http.GetAsync(url, ct);
                 string body = await resp.Content.ReadAsStringAsync(ct);
+                bool is429 = (int)resp.StatusCode == 429;
                 return (resp.IsSuccessStatusCode, body,
-                    resp.IsSuccessStatusCode ? string.Empty : $"HTTP {(int)resp.StatusCode}");
+                    resp.IsSuccessStatusCode ? string.Empty : $"HTTP {(int)resp.StatusCode}",
+                    is429);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                return (false, string.Empty, ex.Message);
+                return (false, string.Empty, ex.Message, false);
             }
         }
     }
