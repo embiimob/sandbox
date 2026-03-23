@@ -209,12 +209,16 @@ namespace BitFossilIndexer
         /// <list type="number">
         ///   <item>Read the "ADD" file and decode the first address to identify the chain.</item>
         ///   <item>If the detected chain is disabled → return a <c>Skipped</c> outcome.</item>
-        ///   <item>If no ADD file / unrecognised address → probe enabled chains in the
-        ///         canonical fallback order (BTC testnet → BTC mainnet → MZC → DOG → LTC),
-        ///         stopping as soon as one succeeds.</item>
+        ///   <item>Call the detected chain. If it succeeds → return immediately.</item>
+        ///   <item>If the detected chain returns no result (<c>"Output":null</c> or HTTP error),
+        ///         probe remaining enabled chains in canonical fallback order
+        ///         (BTC testnet → BTC mainnet → MZC → DOG → LTC), stopping as soon as one
+        ///         succeeds.</item>
+        ///   <item>If no ADD file / unrecognised address → probe all enabled chains in the
+        ///         canonical fallback order.</item>
         /// </list>
         /// Every p2fk.io call is individually rate-limited by <paramref name="rateLimiter"/>;
-        /// this method inserts its own delays only between consecutive fallback attempts.
+        /// delays are inserted between consecutive fallback attempts.
         /// On HTTP 429 the limiter's delay is increased by 200 ms, the call waits 10 s,
         /// and is retried once.
         /// </summary>
@@ -237,27 +241,53 @@ namespace BitFossilIndexer
                 if (!enabledChains.Contains(detected))
                     return new ProcessOutcome(null, true, $"Chain {detected.Label} is not enabled.", false, false);
 
-                // Single targeted API call (with 429 retry).
+                // Targeted API call (with 429 retry).
                 var (ok, body, err, rateLimited) = await CallWithRetryAsync(txId, detected, rateLimiter, ct);
+                if (ok)
+                    return new ProcessOutcome(
+                        new TransactionResult(txId, detected, true, body, string.Empty),
+                        false, string.Empty, false, rateLimited);
+
+                // Detected chain returned no result (Output:null or error) —
+                // try the remaining enabled chains in canonical fallback order.
+                bool anyRateLimited = rateLimited;
+                var remainingFallbacks = AddressDetector.GetEnabledFallbacks(enabledChains)
+                    .Where(t => t != detected)
+                    .ToList();
+
+                foreach (ApiTarget candidate in remainingFallbacks)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    // Wait before each additional attempt.
+                    await rateLimiter.WaitAsync(ct);
+                    var (ok2, body2, err2, rateLimited2) = await CallWithRetryAsync(txId, candidate, rateLimiter, ct);
+                    if (rateLimited2) anyRateLimited = true;
+                    if (ok2)
+                        return new ProcessOutcome(
+                            new TransactionResult(txId, candidate, true, body2, string.Empty),
+                            false, string.Empty, true, anyRateLimited);
+                }
+
+                // All chains exhausted — return the original detected-chain failure.
                 return new ProcessOutcome(
-                    new TransactionResult(txId, detected, ok, body, err),
-                    false, string.Empty, false, rateLimited);
+                    new TransactionResult(txId, detected, false, body, err),
+                    false, string.Empty, remainingFallbacks.Count > 0, anyRateLimited);
             }
 
-            // --- 2. No ADD file or unrecognised address – try enabled fallbacks ---
+            // --- 2. No ADD file or unrecognised address – try all enabled fallbacks ---
             var fallbacks = AddressDetector.GetEnabledFallbacks(enabledChains).ToList();
-            bool anyRateLimited = false;
+            bool anyFallbackRateLimited = false;
 
             for (int i = 0; i < fallbacks.Count; i++)
             {
                 ct.ThrowIfCancellationRequested();
                 ApiTarget candidate = fallbacks[i];
                 var (ok, body, err, rateLimited) = await CallWithRetryAsync(txId, candidate, rateLimiter, ct);
-                if (rateLimited) anyRateLimited = true;
+                if (rateLimited) anyFallbackRateLimited = true;
                 if (ok)
                     return new ProcessOutcome(
                         new TransactionResult(txId, candidate, true, body, string.Empty),
-                        false, string.Empty, true, anyRateLimited);
+                        false, string.Empty, true, anyFallbackRateLimited);
 
                 // Rate-limit between failed fallback attempts (not after the last one).
                 if (i < fallbacks.Count - 1)
@@ -269,7 +299,7 @@ namespace BitFossilIndexer
             return new ProcessOutcome(
                 new TransactionResult(txId, lastTried, false, string.Empty,
                     "No matching blockchain found in fallback order."),
-                false, string.Empty, true, anyRateLimited);
+                false, string.Empty, true, anyFallbackRateLimited);
         }
 
         /// <summary>
@@ -300,13 +330,38 @@ namespace BitFossilIndexer
                 using HttpResponseMessage resp = await Http.GetAsync(url, ct);
                 string body = await resp.Content.ReadAsStringAsync(ct);
                 bool is429 = (int)resp.StatusCode == 429;
-                return (resp.IsSuccessStatusCode, body,
-                    resp.IsSuccessStatusCode ? string.Empty : $"HTTP {(int)resp.StatusCode}",
-                    is429);
+                if (!resp.IsSuccessStatusCode)
+                    return (false, body, $"HTTP {(int)resp.StatusCode}", is429);
+
+                // A 200 response with "Output":null means the transaction was not found
+                // on this blockchain — treat it as a failure so fallback chains are tried.
+                if (IsNullOutput(body))
+                    return (false, body, "Output: null", false);
+
+                return (true, body, string.Empty, false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 return (false, string.Empty, ex.Message, false);
+            }
+        }
+
+        /// <summary>
+        /// Returns <c>true</c> when the API response body contains a JSON object with
+        /// <c>"Output": null</c>, indicating the transaction was not found on the queried blockchain.
+        /// </summary>
+        private static bool IsNullOutput(string body)
+        {
+            if (string.IsNullOrWhiteSpace(body)) return false;
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(body);
+                return doc.RootElement.TryGetProperty("Output", out System.Text.Json.JsonElement prop) &&
+                       prop.ValueKind == System.Text.Json.JsonValueKind.Null;
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                return false;
             }
         }
     }
