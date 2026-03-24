@@ -340,7 +340,7 @@ namespace BitFossilIndexer
 
                 return (true, body, string.Empty, false);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
             {
                 return (false, string.Empty, ex.Message, false);
             }
