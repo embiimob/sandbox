@@ -28,6 +28,7 @@ namespace BitFossilIndexer
         private CheckBox chkLtc = null!;
         private Button btnPause = null!;
         private Label lblTotalFolders = null!;
+        private Label lblCurrentTps = null!;
 
         private Panel pnlLog = null!;
         private RichTextBox rtbLog = null!;
@@ -144,7 +145,7 @@ namespace BitFossilIndexer
 
             btnClear = new Button
             {
-                Text = "🗑 Clear",
+                Text = "🗑 Reset Log",
                 Font = new Font("Segoe UI", 9),
                 BackColor = Color.FromArgb(40, 40, 70),
                 ForeColor = ClrWhite,
@@ -225,10 +226,22 @@ namespace BitFossilIndexer
                 Anchor = AnchorStyles.Right | AnchorStyles.Top
             };
 
+            lblCurrentTps = new Label
+            {
+                Text = $"⚡ {RateLimiter.MaxTps}/10s",
+                Font = new Font("Consolas", 9, FontStyle.Bold),
+                ForeColor = ClrAccent,
+                AutoSize = false,
+                Width = 80,
+                TextAlign = ContentAlignment.MiddleRight,
+                Location = new Point(905, 15),   // positioned by LayoutChainFilter
+                Anchor = AnchorStyles.Right | AnchorStyles.Top
+            };
+
             pnlChainFilter.Controls.AddRange([
                 lblChainsLabel,
                 chkBtcTestnet, chkBtcMainnet, chkMzc, chkDog, chkLtc,
-                btnPause, lblTotalFolders
+                btnPause, lblCurrentTps, lblTotalFolders
             ]);
 
             // Layout checkboxes and right-anchored controls
@@ -336,10 +349,11 @@ namespace BitFossilIndexer
             int panelW = pnlChainFilter.ClientSize.Width;
             int cy = (pnlChainFilter.Height - 26) / 2;     // vertical centre for controls
 
-            // Right-anchored controls
+            // Right-anchored controls: | ... | btnPause | ⚡ TPS | 📂 folders |
             lblTotalFolders.Left = panelW - 12 - lblTotalFolders.Width;
+            lblCurrentTps.Left   = lblTotalFolders.Left - lblCurrentTps.Width - 4;
             btnPause.Top = cy;
-            btnPause.Left = lblTotalFolders.Left - btnPause.Width - 8;
+            btnPause.Left = lblCurrentTps.Left - btnPause.Width - 8;
 
             // Distribute checkboxes between the "Chains:" label and btnPause
             int startX = lblChainsLabel.Right + 12;
@@ -359,6 +373,7 @@ namespace BitFossilIndexer
             // Vertically centre the labels
             lblChainsLabel.Top  = (pnlChainFilter.Height - lblChainsLabel.Height) / 2;
             lblTotalFolders.Top = (pnlChainFilter.Height - lblTotalFolders.Height) / 2;
+            lblCurrentTps.Top   = (pnlChainFilter.Height - lblCurrentTps.Height) / 2;
         }
 
         private void ApplyStyling() { }   // styling is applied inline above

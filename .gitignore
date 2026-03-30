@@ -15,3 +15,5 @@ packages/
 # OS artefacts
 .DS_Store
 Thumbs.db
+bin/
+obj/
