@@ -35,6 +35,7 @@ namespace BitFossilIndexer
         private Panel pnlFooter = null!;
         private Label lblStatus = null!;
         private Label lblProgress = null!;
+        private Label lblCurrentTps = null!;
         private ProgressBar progressBar = null!;
 
         private void InitializeComponent()
@@ -269,11 +270,23 @@ namespace BitFossilIndexer
                 ForeColor = ClrMuted,
                 AutoEllipsis = true,
                 Location = new Point(70, 12),
-                Width = 700,
+                Width = 600,
                 Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top
             };
 
-            pnlFooter.Controls.AddRange([progressBar, lblProgress, lblStatus]);
+            lblCurrentTps = new Label
+            {
+                Text = $"⚡ {RateLimiter.MaxTps} TPS",
+                Font = new Font("Consolas", 9, FontStyle.Bold),
+                ForeColor = ClrAccent,
+                AutoSize = false,
+                Width = 100,
+                TextAlign = ContentAlignment.MiddleRight,
+                Location = new Point(920, 12),
+                Anchor = AnchorStyles.Right | AnchorStyles.Top
+            };
+
+            pnlFooter.Controls.AddRange([progressBar, lblProgress, lblStatus, lblCurrentTps]);
 
             // ── Log panel ────────────────────────────────────────────────────
             pnlLog = new Panel

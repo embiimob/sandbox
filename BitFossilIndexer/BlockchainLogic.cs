@@ -45,38 +45,71 @@ namespace BitFossilIndexer
         bool WasRateLimited);
 
     // ──────────────────────────────────────────────────────────────────────────
-    // Sliding-window rate limiter – enforces a hard cap of 9 API calls per
-    // second to stay safely under the p2fk.io 10 TPS limit.  Also supports an
-    // adaptive inter-call delay that increases by 200 ms each time a 429 is
-    // received (giving extra breathing room when the server pushes back).
+    // Adaptive sliding-window rate limiter.
+    //
+    // Hard-caps API calls at ≤ 7 TPS (safely under the p2fk.io 10 TPS limit).
+    // When a 429 is received the current TPS cap is *decreased* by 1 (minimum
+    // 1 TPS).  On every successful (non-429) call the cap is *increased* by 1
+    // back toward the maximum of 7 TPS.  This creates a self-regulating
+    // oscillation that finds the server's actual limit without ever-growing
+    // delays that would slow the application to a crawl over long runs.
     // ──────────────────────────────────────────────────────────────────────────
     internal class RateLimiter
     {
-        /// <summary>Hard ceiling: never exceed this many HTTP calls in any
-        /// rolling 1-second window.</summary>
-        public const int MaxCallsPerSecond = 9;
+        /// <summary>Absolute maximum TPS the limiter will allow.</summary>
+        public const int MaxTps = 7;
 
-        public const int InitialDelayMs = 2_000;
-        private const int IncrementMs  = 200;
+        /// <summary>Absolute minimum TPS – never throttle below this.</summary>
+        public const int MinTps = 1;
 
         /// <summary>Small buffer added when computing the wait time so we
         /// don't re-check the window right on the boundary tick.</summary>
         private const int WindowBufferMs = 15;
 
-        /// <summary>Adaptive inter-call delay (grows on 429).</summary>
-        public int DelayMs { get; private set; } = InitialDelayMs;
+        /// <summary>Small fixed inter-call delay used for politeness between
+        /// transactions and fallback attempts.  Unlike the old design this
+        /// value is constant and never grows.</summary>
+        private const int PolitenessDelayMs = 150;
+
+        private int _currentTps = MaxTps;
 
         // Sliding window of UTC timestamps for recent API calls.
         private readonly Queue<long> _callTicks = new();
         private readonly object _lock = new();
 
-        /// <summary>Permanently increase the inter-call delay by 200 ms.</summary>
-        public void Increase() => DelayMs += IncrementMs;
+        /// <summary>The TPS cap currently in effect.</summary>
+        public int CurrentTps
+        {
+            get { lock (_lock) return _currentTps; }
+        }
+
+        /// <summary>Decrease the TPS cap by 1 (minimum <see cref="MinTps"/>).
+        /// Called when a 429 is received.</summary>
+        public void Throttle()
+        {
+            lock (_lock)
+            {
+                if (_currentTps > MinTps)
+                    _currentTps--;
+            }
+        }
+
+        /// <summary>Increase the TPS cap by 1 toward <see cref="MaxTps"/>.
+        /// Called on every successful (non-429) API response so the limiter
+        /// gradually recovers to full speed.</summary>
+        public void TryRecover()
+        {
+            lock (_lock)
+            {
+                if (_currentTps < MaxTps)
+                    _currentTps++;
+            }
+        }
 
         /// <summary>
         /// Acquires a rate-limit slot before making an API call.  Blocks
         /// (asynchronously) until the sliding window has room for one more
-        /// call within the 1-second window, guaranteeing ≤ 9 TPS.
+        /// call within the 1-second window, guaranteeing ≤ <see cref="CurrentTps"/> TPS.
         /// </summary>
         public async Task WaitForSlotAsync(CancellationToken ct)
         {
@@ -94,7 +127,7 @@ namespace BitFossilIndexer
                     while (_callTicks.Count > 0 && _callTicks.Peek() <= windowStart)
                         _callTicks.Dequeue();
 
-                    if (_callTicks.Count < MaxCallsPerSecond)
+                    if (_callTicks.Count < _currentTps)
                     {
                         // Slot available – record the call and return immediately.
                         _callTicks.Enqueue(nowTicks);
@@ -114,9 +147,9 @@ namespace BitFossilIndexer
             }
         }
 
-        /// <summary>Waits for the adaptive inter-call delay (used between
-        /// transactions and fallback attempts for politeness).</summary>
-        public Task WaitAsync(CancellationToken ct) => Task.Delay(DelayMs, ct);
+        /// <summary>Small fixed inter-call delay used for politeness between
+        /// transactions and fallback attempts.  Never grows.</summary>
+        public Task WaitAsync(CancellationToken ct) => Task.Delay(PolitenessDelayMs, ct);
     }
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -276,8 +309,9 @@ namespace BitFossilIndexer
         /// </list>
         /// Every p2fk.io call is individually rate-limited by <paramref name="rateLimiter"/>;
         /// delays are inserted between consecutive fallback attempts.
-        /// On HTTP 429 the limiter's delay is increased by 200 ms, the call waits 10 s,
-        /// and is retried once.
+        /// On HTTP 429 the limiter's TPS cap is decreased by 1 (min 1 TPS),
+        /// the call waits 2 s, and is retried once.  On success the TPS cap is
+        /// increased by 1 back toward the maximum of 7 TPS.
         /// </summary>
         public static async Task<ProcessOutcome> ProcessAsync(
             string txId,
@@ -360,8 +394,10 @@ namespace BitFossilIndexer
         }
 
         /// <summary>
-        /// Calls the API once. If the response is HTTP 429, increases the rate-limiter
-        /// delay by 200 ms, waits 10 seconds, then retries the call exactly once.
+        /// Calls the API once. If the response is HTTP 429, decreases the
+        /// rate-limiter TPS cap by 1, waits 2 s, then retries the call exactly
+        /// once.  On a non-429 response the TPS cap is nudged back up by 1
+        /// toward the maximum so the limiter self-regulates.
         /// Returns <c>wasRateLimited = true</c> when a 429 was encountered.
         /// </summary>
         private static async Task<(bool ok, string body, string error, bool wasRateLimited)>
@@ -369,12 +405,19 @@ namespace BitFossilIndexer
         {
             var (ok, body, err, is429) = await CallApiAsync(txId, target, rateLimiter, ct);
             if (!is429)
+            {
+                // Successful round-trip (even if the *API* returned an error
+                // like Output:null) — nudge TPS back toward the maximum.
+                rateLimiter.TryRecover();
                 return (ok, body, err, false);
+            }
 
-            // 429 received: increase delay, wait 10 s, retry once.
-            rateLimiter.Increase();
-            await Task.Delay(TimeSpan.FromSeconds(10), ct);
-            var (ok2, body2, err2, _) = await CallApiAsync(txId, target, rateLimiter, ct);
+            // 429 received: reduce TPS cap, brief backoff, retry once.
+            rateLimiter.Throttle();
+            await Task.Delay(TimeSpan.FromSeconds(2), ct);
+            var (ok2, body2, err2, is429Again) = await CallApiAsync(txId, target, rateLimiter, ct);
+            if (!is429Again)
+                rateLimiter.TryRecover();
             return (ok2, body2, err2, true);
         }
 
@@ -384,7 +427,7 @@ namespace BitFossilIndexer
             string url = target.BuildUrl(txId);
             try
             {
-                // Acquire a rate-limit slot (blocks until ≤ 9 TPS).
+                // Acquire a rate-limit slot (blocks until ≤ CurrentTps TPS).
                 await rateLimiter.WaitForSlotAsync(ct);
                 using HttpResponseMessage resp = await Http.GetAsync(url, ct);
                 string body = await resp.Content.ReadAsStringAsync(ct);

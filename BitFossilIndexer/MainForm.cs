@@ -159,6 +159,18 @@ namespace BitFossilIndexer
             lblTotalFolders.ForeColor = ClrAccent;
         }
 
+        /// <summary>Refreshes the live TPS indicator in the footer, colour-coded
+        /// so the user can see where the adaptive limiter has settled.</summary>
+        private void UpdateTpsDisplay()
+        {
+            if (InvokeRequired) { Invoke(UpdateTpsDisplay); return; }
+            int tps = _rateLimiter.CurrentTps;
+            lblCurrentTps.Text = $"⚡ {tps} TPS";
+            lblCurrentTps.ForeColor = tps >= 5 ? ClrGreen
+                                    : tps >= 3 ? ClrYellow
+                                    :            ClrRed;
+        }
+
         // ── chain-count helpers ───────────────────────────────────────────────
 
         private void IncrementChainCount(ApiTarget target)
@@ -248,7 +260,7 @@ namespace BitFossilIndexer
             _cts          = new CancellationTokenSource();
             _running      = true;
             _paused       = false;
-            _rateLimiter  = new RateLimiter();   // reset delay to 2000 ms for each new run
+            _rateLimiter  = new RateLimiter();   // reset TPS to max for each new run
 
             ResetChainCountLabels();
 
@@ -392,6 +404,7 @@ namespace BitFossilIndexer
                     UpdateProgress(done, folders.Length);
                     SetStatus($"Processing {done} / {folders.Length}…");
                     TrackAndTrimLog();
+                    UpdateTpsDisplay();
                     await _rateLimiter.WaitAsync(ct);
                     continue;
                 }
@@ -406,6 +419,7 @@ namespace BitFossilIndexer
                     UpdateProgress(done, folders.Length);
                     SetStatus($"Processing {done} / {folders.Length}…");
                     TrackAndTrimLog();
+                    UpdateTpsDisplay();
                     // No API call was made, so no rate-limit delay needed.
                     continue;
                 }
@@ -414,7 +428,7 @@ namespace BitFossilIndexer
                 if (outcome.WasRateLimited)
                 {
                     AppendLog("        ⚡ ", ClrYellow, bold: true);
-                    AppendLine($"Rate limited (429) — waited 10 s, retried.  Inter-call delay now {_rateLimiter.DelayMs} ms.", ClrYellow);
+                    AppendLine($"Rate limited (429) — TPS reduced to {_rateLimiter.CurrentTps}, retried.", ClrYellow);
                 }
 
                 // ── API result ───────────────────────────────────────────────
@@ -453,6 +467,7 @@ namespace BitFossilIndexer
                 UpdateProgress(done, folders.Length);
                 SetStatus($"Processing {done} / {folders.Length}…");
                 TrackAndTrimLog();
+                UpdateTpsDisplay();
 
                 // Inter-transaction delay using the adaptive rate limiter.
                 // Fallback paths already inserted per-attempt delays internally.
