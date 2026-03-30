@@ -21,6 +21,18 @@ namespace BitFossilIndexer
         // Per-chain found-root counters (updated live)
         private readonly Dictionary<ApiTarget, int> _chainCounts = new();
 
+        // ── log management ────────────────────────────────────────────────────
+        /// <summary>Maximum number of transaction entries kept in the event
+        /// log before the oldest entries are automatically trimmed.</summary>
+        private const int MaxLogEntries = 100;
+
+        /// <summary>Number of transaction entries currently in the log.</summary>
+        private int _logEntryCount;
+
+        /// <summary>Cached bold font – avoids creating (and leaking) a new
+        /// GDI Font object on every formatted append.</summary>
+        private Font? _boldFont;
+
         // ── colour palette ────────────────────────────────────────────────────
         private static readonly Color ClrBackground = Color.FromArgb(12, 12, 24);
         private static readonly Color ClrPanel      = Color.FromArgb(20, 20, 40);
@@ -54,7 +66,15 @@ namespace BitFossilIndexer
             rtbLog.SelectionStart = rtbLog.TextLength;
             rtbLog.SelectionLength = 0;
             rtbLog.SelectionColor = colour;
-            rtbLog.SelectionFont = bold ? new Font(rtbLog.Font, FontStyle.Bold) : rtbLog.Font;
+            if (bold)
+            {
+                _boldFont ??= new Font(rtbLog.Font, FontStyle.Bold);
+                rtbLog.SelectionFont = _boldFont;
+            }
+            else
+            {
+                rtbLog.SelectionFont = rtbLog.Font;
+            }
             rtbLog.AppendText(text);
             rtbLog.SelectionColor = rtbLog.ForeColor;
             rtbLog.SelectionFont = rtbLog.Font;
@@ -69,6 +89,59 @@ namespace BitFossilIndexer
             if (InvokeRequired) { Invoke(() => SetStatus(text, colour)); return; }
             lblStatus.Text = text;
             lblStatus.ForeColor = colour ?? ClrMuted;
+        }
+
+        /// <summary>Increments the entry counter and, when the limit is
+        /// reached, trims the oldest half of the log to reclaim memory.</summary>
+        private void TrackAndTrimLog()
+        {
+            if (InvokeRequired) { Invoke(TrackAndTrimLog); return; }
+
+            _logEntryCount++;
+            if (_logEntryCount <= MaxLogEntries) return;
+
+            TrimLog();
+        }
+
+        /// <summary>Removes the oldest half of the lines in the event log
+        /// and reclaims memory.</summary>
+        private void TrimLog()
+        {
+            if (InvokeRequired) { Invoke(TrimLog); return; }
+
+            int totalLines = rtbLog.Lines.Length;
+            if (totalLines <= 1) return;
+
+            int linesToRemove = totalLines / 2;
+            int charIndex = rtbLog.GetFirstCharIndexFromLine(linesToRemove);
+            if (charIndex < 0) return;
+
+            rtbLog.ReadOnly = false;
+            rtbLog.Select(0, charIndex);
+            rtbLog.SelectedText = $"[… {linesToRemove} earlier lines trimmed …]{Environment.NewLine}";
+            rtbLog.ReadOnly = true;
+            rtbLog.SelectionStart = rtbLog.TextLength;
+            rtbLog.ScrollToCaret();
+
+            _logEntryCount = _logEntryCount / 2;
+        }
+
+        /// <summary>Clears the event log completely and forces a garbage
+        /// collection to reclaim the memory occupied by the discarded RTF
+        /// content.  Safe to call while indexing is running.</summary>
+        private void ClearAndReclaimLog()
+        {
+            if (InvokeRequired) { Invoke(ClearAndReclaimLog); return; }
+
+            rtbLog.Clear();
+            rtbLog.ClearUndo();
+            _logEntryCount = 0;
+
+            // Force a GC to release the large RTF string buffers.
+            GC.Collect(2, GCCollectionMode.Optimized);
+            GC.WaitForPendingFinalizers();
+
+            AppendLine("🗑  Log cleared and memory reclaimed.", ClrMuted, bold: true);
         }
 
         private void UpdateProgress(int done, int total)
@@ -184,13 +257,14 @@ namespace BitFossilIndexer
             btnPause.Enabled   = true;
             btnPause.Text      = "⏸  Pause";
             btnPause.BackColor = Color.FromArgb(40, 40, 70);
-            btnClear.Enabled   = false;
+            btnClear.Enabled   = true;   // allow log reset while running
 
             // Disable chain checkboxes while running
             foreach (var cb in new[] { chkBtcTestnet, chkBtcMainnet, chkMzc, chkDog, chkLtc })
                 cb.Enabled = false;
 
             rtbLog.Clear();
+            _logEntryCount = 0;
 
             try
             {
@@ -248,7 +322,7 @@ namespace BitFossilIndexer
             }
         }
 
-        private void btnClear_Click(object sender, EventArgs e) => rtbLog.Clear();
+        private void btnClear_Click(object sender, EventArgs e) => ClearAndReclaimLog();
 
         private void btnBrowse_Click(object sender, EventArgs e)
         {
@@ -317,6 +391,7 @@ namespace BitFossilIndexer
                     failed++;
                     UpdateProgress(done, folders.Length);
                     SetStatus($"Processing {done} / {folders.Length}…");
+                    TrackAndTrimLog();
                     await _rateLimiter.WaitAsync(ct);
                     continue;
                 }
@@ -330,6 +405,7 @@ namespace BitFossilIndexer
                     done++;
                     UpdateProgress(done, folders.Length);
                     SetStatus($"Processing {done} / {folders.Length}…");
+                    TrackAndTrimLog();
                     // No API call was made, so no rate-limit delay needed.
                     continue;
                 }
@@ -376,6 +452,7 @@ namespace BitFossilIndexer
                 done++;
                 UpdateProgress(done, folders.Length);
                 SetStatus($"Processing {done} / {folders.Length}…");
+                TrackAndTrimLog();
 
                 // Inter-transaction delay using the adaptive rate limiter.
                 // Fallback paths already inserted per-attempt delays internally.

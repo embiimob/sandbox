@@ -144,7 +144,7 @@ namespace BitFossilIndexer
 
             btnClear = new Button
             {
-                Text = "🗑 Clear",
+                Text = "🗑 Reset Log",
                 Font = new Font("Segoe UI", 9),
                 BackColor = Color.FromArgb(40, 40, 70),
                 ForeColor = ClrWhite,

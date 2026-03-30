@@ -45,20 +45,73 @@ namespace BitFossilIndexer
         bool WasRateLimited);
 
     // ──────────────────────────────────────────────────────────────────────────
-    // Adaptive rate limiter – tracks the current inter-call delay and increases
-    // it by 200 ms every time a 429 is received.
+    // Sliding-window rate limiter – enforces a hard cap of 9 API calls per
+    // second to stay safely under the p2fk.io 10 TPS limit.  Also supports an
+    // adaptive inter-call delay that increases by 200 ms each time a 429 is
+    // received (giving extra breathing room when the server pushes back).
     // ──────────────────────────────────────────────────────────────────────────
     internal class RateLimiter
     {
+        /// <summary>Hard ceiling: never exceed this many HTTP calls in any
+        /// rolling 1-second window.</summary>
+        public const int MaxCallsPerSecond = 9;
+
         public const int InitialDelayMs = 2_000;
         private const int IncrementMs  = 200;
 
+        /// <summary>Adaptive inter-call delay (grows on 429).</summary>
         public int DelayMs { get; private set; } = InitialDelayMs;
+
+        // Sliding window of UTC timestamps for recent API calls.
+        private readonly Queue<long> _callTicks = new();
+        private readonly object _lock = new();
 
         /// <summary>Permanently increase the inter-call delay by 200 ms.</summary>
         public void Increase() => DelayMs += IncrementMs;
 
-        /// <summary>Waits for the current inter-call delay.</summary>
+        /// <summary>
+        /// Acquires a rate-limit slot before making an API call.  Blocks
+        /// (asynchronously) until the sliding window has room for one more
+        /// call within the 1-second window, guaranteeing ≤ 9 TPS.
+        /// </summary>
+        public async Task WaitForSlotAsync(CancellationToken ct)
+        {
+            while (true)
+            {
+                ct.ThrowIfCancellationRequested();
+
+                TimeSpan waitTime;
+                lock (_lock)
+                {
+                    long nowTicks = DateTime.UtcNow.Ticks;
+                    long windowStart = nowTicks - TimeSpan.TicksPerSecond;
+
+                    // Evict timestamps older than 1 second.
+                    while (_callTicks.Count > 0 && _callTicks.Peek() <= windowStart)
+                        _callTicks.Dequeue();
+
+                    if (_callTicks.Count < MaxCallsPerSecond)
+                    {
+                        // Slot available – record the call and return immediately.
+                        _callTicks.Enqueue(nowTicks);
+                        return;
+                    }
+
+                    // Window is full – compute how long to wait until the oldest
+                    // entry expires out of the 1-second window.
+                    long oldestTick = _callTicks.Peek();
+                    long resumeTick = oldestTick + TimeSpan.TicksPerSecond;
+                    waitTime = TimeSpan.FromTicks(resumeTick - nowTicks)
+                             + TimeSpan.FromMilliseconds(15); // small buffer
+                }
+
+                if (waitTime > TimeSpan.Zero)
+                    await Task.Delay(waitTime, ct);
+            }
+        }
+
+        /// <summary>Waits for the adaptive inter-call delay (used between
+        /// transactions and fallback attempts for politeness).</summary>
         public Task WaitAsync(CancellationToken ct) => Task.Delay(DelayMs, ct);
     }
 
@@ -310,23 +363,25 @@ namespace BitFossilIndexer
         private static async Task<(bool ok, string body, string error, bool wasRateLimited)>
             CallWithRetryAsync(string txId, ApiTarget target, RateLimiter rateLimiter, CancellationToken ct)
         {
-            var (ok, body, err, is429) = await CallApiAsync(txId, target, ct);
+            var (ok, body, err, is429) = await CallApiAsync(txId, target, rateLimiter, ct);
             if (!is429)
                 return (ok, body, err, false);
 
             // 429 received: increase delay, wait 10 s, retry once.
             rateLimiter.Increase();
             await Task.Delay(TimeSpan.FromSeconds(10), ct);
-            var (ok2, body2, err2, _) = await CallApiAsync(txId, target, ct);
+            var (ok2, body2, err2, _) = await CallApiAsync(txId, target, rateLimiter, ct);
             return (ok2, body2, err2, true);
         }
 
         private static async Task<(bool ok, string body, string error, bool is429)> CallApiAsync(
-            string txId, ApiTarget target, CancellationToken ct)
+            string txId, ApiTarget target, RateLimiter rateLimiter, CancellationToken ct)
         {
             string url = target.BuildUrl(txId);
             try
             {
+                // Acquire a rate-limit slot (blocks until ≤ 9 TPS).
+                await rateLimiter.WaitForSlotAsync(ct);
                 using HttpResponseMessage resp = await Http.GetAsync(url, ct);
                 string body = await resp.Content.ReadAsStringAsync(ct);
                 bool is429 = (int)resp.StatusCode == 429;
