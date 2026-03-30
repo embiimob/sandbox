@@ -228,7 +228,7 @@ namespace BitFossilIndexer
 
             lblCurrentTps = new Label
             {
-                Text = $"⚡ {RateLimiter.MaxTps} TPS",
+                Text = $"⚡ {RateLimiter.MaxTps}/10s",
                 Font = new Font("Consolas", 9, FontStyle.Bold),
                 ForeColor = ClrAccent,
                 AutoSize = false,

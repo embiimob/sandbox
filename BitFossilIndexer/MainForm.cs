@@ -159,16 +159,16 @@ namespace BitFossilIndexer
             lblTotalFolders.ForeColor = ClrAccent;
         }
 
-        /// <summary>Refreshes the live TPS indicator in the chain-filter bar,
+        /// <summary>Refreshes the live rate indicator in the chain-filter bar,
         /// colour-coded so the user can see where the adaptive limiter has settled.</summary>
         private void UpdateTpsDisplay()
         {
             if (InvokeRequired) { Invoke(UpdateTpsDisplay); return; }
-            int tps = _rateLimiter.CurrentTps;
-            lblCurrentTps.Text = $"⚡ {tps} TPS";
-            lblCurrentTps.ForeColor = tps == RateLimiter.MaxTps ? ClrGreen
-                                    : tps >= 2                  ? ClrYellow
-                                    :                             ClrRed;
+            int cap = _rateLimiter.CurrentTps;
+            lblCurrentTps.Text = $"⚡ {cap}/10s";
+            lblCurrentTps.ForeColor = cap == RateLimiter.MaxTps ? ClrGreen
+                                    : cap >= 5                   ? ClrYellow
+                                    :                              ClrRed;
         }
 
         // ── chain-count helpers ───────────────────────────────────────────────
@@ -260,7 +260,7 @@ namespace BitFossilIndexer
             _cts          = new CancellationTokenSource();
             _running      = true;
             _paused       = false;
-            _rateLimiter  = new RateLimiter();   // reset TPS to max for each new run
+            _rateLimiter  = new RateLimiter();   // reset cap to max for each new run
 
             ResetChainCountLabels();
 
@@ -428,7 +428,7 @@ namespace BitFossilIndexer
                 if (outcome.WasRateLimited)
                 {
                     AppendLog("        ⚡ ", ClrYellow, bold: true);
-                    AppendLine($"Rate limited (429) — TPS reduced to {_rateLimiter.CurrentTps}, retried.", ClrYellow);
+                    AppendLine($"Rate limited (429) — cap reduced to {_rateLimiter.CurrentTps}/10s, retried.", ClrYellow);
                 }
 
                 // ── API result ───────────────────────────────────────────────
