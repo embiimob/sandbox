@@ -47,10 +47,10 @@ namespace BitFossilIndexer
     // ──────────────────────────────────────────────────────────────────────────
     // Adaptive sliding-window rate limiter.
     //
-    // Hard-caps API calls at ≤ 7 TPS (safely under the p2fk.io 10 TPS limit).
+    // Hard-caps API calls at ≤ 3 TPS (safely under the p2fk.io 10 TPS limit).
     // When a 429 is received the current TPS cap is *decreased* by 1 (minimum
     // 1 TPS).  On every successful (non-429) call the cap is *increased* by 1
-    // back toward the maximum of 7 TPS.  This creates a self-regulating
+    // back toward the maximum of 3 TPS.  This creates a self-regulating
     // oscillation that finds the server's actual limit without ever-growing
     // delays that would slow the application to a crawl over long runs.
     // ──────────────────────────────────────────────────────────────────────────
@@ -311,7 +311,7 @@ namespace BitFossilIndexer
         /// delays are inserted between consecutive fallback attempts.
         /// On HTTP 429 the limiter's TPS cap is decreased by 1 (min 1 TPS),
         /// the call waits 2 s, and is retried once.  On success the TPS cap is
-        /// increased by 1 back toward the maximum of 7 TPS.
+        /// increased by 1 back toward the maximum of 3 TPS.
         /// </summary>
         public static async Task<ProcessOutcome> ProcessAsync(
             string txId,
