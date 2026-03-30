@@ -123,7 +123,7 @@ namespace BitFossilIndexer
             rtbLog.SelectionStart = rtbLog.TextLength;
             rtbLog.ScrollToCaret();
 
-            _logEntryCount = _logEntryCount / 2;
+            _logEntryCount = (_logEntryCount + 1) / 2;
         }
 
         /// <summary>Clears the event log completely and forces a garbage
@@ -138,7 +138,7 @@ namespace BitFossilIndexer
             _logEntryCount = 0;
 
             // Force a GC to release the large RTF string buffers.
-            GC.Collect(2, GCCollectionMode.Optimized);
+            GC.Collect(2, GCCollectionMode.Forced);
             GC.WaitForPendingFinalizers();
 
             AppendLine("🗑  Log cleared and memory reclaimed.", ClrMuted, bold: true);

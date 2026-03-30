@@ -59,6 +59,10 @@ namespace BitFossilIndexer
         public const int InitialDelayMs = 2_000;
         private const int IncrementMs  = 200;
 
+        /// <summary>Small buffer added when computing the wait time so we
+        /// don't re-check the window right on the boundary tick.</summary>
+        private const int WindowBufferMs = 15;
+
         /// <summary>Adaptive inter-call delay (grows on 429).</summary>
         public int DelayMs { get; private set; } = InitialDelayMs;
 
@@ -102,7 +106,7 @@ namespace BitFossilIndexer
                     long oldestTick = _callTicks.Peek();
                     long resumeTick = oldestTick + TimeSpan.TicksPerSecond;
                     waitTime = TimeSpan.FromTicks(resumeTick - nowTicks)
-                             + TimeSpan.FromMilliseconds(15); // small buffer
+                             + TimeSpan.FromMilliseconds(WindowBufferMs);
                 }
 
                 if (waitTime > TimeSpan.Zero)
