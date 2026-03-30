@@ -159,16 +159,16 @@ namespace BitFossilIndexer
             lblTotalFolders.ForeColor = ClrAccent;
         }
 
-        /// <summary>Refreshes the live TPS indicator in the footer, colour-coded
-        /// so the user can see where the adaptive limiter has settled.</summary>
+        /// <summary>Refreshes the live TPS indicator in the chain-filter bar,
+        /// colour-coded so the user can see where the adaptive limiter has settled.</summary>
         private void UpdateTpsDisplay()
         {
             if (InvokeRequired) { Invoke(UpdateTpsDisplay); return; }
             int tps = _rateLimiter.CurrentTps;
             lblCurrentTps.Text = $"⚡ {tps} TPS";
-            lblCurrentTps.ForeColor = tps >= 5 ? ClrGreen
-                                    : tps >= 3 ? ClrYellow
-                                    :            ClrRed;
+            lblCurrentTps.ForeColor = tps == RateLimiter.MaxTps ? ClrGreen
+                                    : tps >= 2                  ? ClrYellow
+                                    :                             ClrRed;
         }
 
         // ── chain-count helpers ───────────────────────────────────────────────

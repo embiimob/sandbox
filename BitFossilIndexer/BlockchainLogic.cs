@@ -57,7 +57,7 @@ namespace BitFossilIndexer
     internal class RateLimiter
     {
         /// <summary>Absolute maximum TPS the limiter will allow.</summary>
-        public const int MaxTps = 7;
+        public const int MaxTps = 3;
 
         /// <summary>Absolute minimum TPS – never throttle below this.</summary>
         public const int MinTps = 1;
