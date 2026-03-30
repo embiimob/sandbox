@@ -146,6 +146,7 @@ namespace BitFossilIndexer
                     {
                         // Window has room — enforce minimum spacing so calls
                         // are spread evenly across the window.
+                        // (Integer truncation is intentional; lost fraction is < 1 tick ≈ 0.1 µs.)
                         long minGapTicks = windowTicks / _currentTps;
                         long nextAllowed = _lastCallTick + minGapTicks;
                         if (nowTicks >= nextAllowed)
