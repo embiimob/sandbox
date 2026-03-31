@@ -10,7 +10,8 @@ namespace BitFossilIndexer
 {
     public partial class MainForm : Form
     {
-        private const string DefaultRootPath = @"C:\bitfossil\ApertusMain\root";
+        private const string DefaultRootPath     = @"C:\bitfossil\ApertusMain\root";
+        private const string AlternativeRootPath = @"C:\bitfossil\root";
 
         // ── run-state ──────────────────────────────────────────────────────────
         private CancellationTokenSource? _cts;
@@ -55,7 +56,17 @@ namespace BitFossilIndexer
         public MainForm()
         {
             InitializeComponent();
+            txtRoot.Text = PickDefaultRootPath();
             ApplyStyling();
+        }
+
+        /// <summary>Returns the first default root path that already exists on
+        /// disk, falling back to <see cref="DefaultRootPath"/> if neither does.</summary>
+        private static string PickDefaultRootPath()
+        {
+            if (Directory.Exists(DefaultRootPath))     return DefaultRootPath;
+            if (Directory.Exists(AlternativeRootPath)) return AlternativeRootPath;
+            return DefaultRootPath;
         }
 
         // ── UI helpers ────────────────────────────────────────────────────────
@@ -443,13 +454,34 @@ namespace BitFossilIndexer
 
                 if (result.Success)
                 {
-                    succeeded++;
-                    IncrementChainCount(result.Target);   // update live counter
-                    AppendLog("        ✔ ", ClrGreen, bold: true);
-                    AppendLine("Response:", ClrGreen);
-                    foreach (string line in result.ResponseBody
-                                                  .Split('\n', System.StringSplitOptions.RemoveEmptyEntries))
-                        AppendLine("          " + line.TrimEnd(), ClrWhite);
+                    // Check for a partial/corrupted root: API returned a Signature
+                    // but Signed == false.  Remove the folder from disk so it never
+                    // shows up as a complete result.
+                    if (TransactionProcessor.IsPartialRoot(result.ResponseBody))
+                    {
+                        AppendLog("        ⚠ ", ClrYellow, bold: true);
+                        AppendLine("Partial root detected (signature present, signed=false) — removing folder.", ClrYellow);
+                        try
+                        {
+                            Directory.Delete(folder, recursive: true);
+                            AppendLine($"        🗑  Removed: {folder}", ClrMuted);
+                        }
+                        catch (Exception delEx)
+                        {
+                            AppendLine($"        ✘  Could not remove folder: {delEx.Message}", ClrRed);
+                        }
+                        failed++;
+                    }
+                    else
+                    {
+                        succeeded++;
+                        IncrementChainCount(result.Target);   // update live counter
+                        AppendLog("        ✔ ", ClrGreen, bold: true);
+                        AppendLine("Response:", ClrGreen);
+                        foreach (string line in result.ResponseBody
+                                                      .Split('\n', System.StringSplitOptions.RemoveEmptyEntries))
+                            AppendLine("          " + line.TrimEnd(), ClrWhite);
+                    }
                 }
                 else
                 {
