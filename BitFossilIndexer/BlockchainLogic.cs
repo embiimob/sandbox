@@ -47,19 +47,19 @@ namespace BitFossilIndexer
     // ──────────────────────────────────────────────────────────────────────────
     // Adaptive sliding-window rate limiter.
     //
-    // The p2fk.io API allows max 10 transactions per 10 seconds.  We cap at 9
-    // per 10 s to stay safely under the limit, and spread calls evenly across
-    // the window (~1.1 s apart) to avoid bursts.
+    // The p2fk.io API allows max 10 transactions per 10 seconds.  We use the
+    // full 10 per 10 s and spread calls evenly across the window (1 s apart)
+    // to avoid bursts.
     //
     // When a 429 is received the current cap is *decreased* by 1 (minimum 1).
     // On every successful (non-429) call the cap is *increased* by 1 back
-    // toward the maximum of 9.  This self-regulating oscillation finds the
+    // toward the maximum of 10.  This self-regulating oscillation finds the
     // server's actual limit without ever-growing delays.
     // ──────────────────────────────────────────────────────────────────────────
     internal class RateLimiter
     {
         /// <summary>Maximum calls allowed in the 10-second window.</summary>
-        public const int MaxTps = 9;
+        public const int MaxTps = 10;
 
         /// <summary>Minimum calls allowed in the 10-second window – never
         /// throttle below this.</summary>
@@ -339,7 +339,7 @@ namespace BitFossilIndexer
         /// delays are inserted between consecutive fallback attempts.
         /// On HTTP 429 the limiter's cap is decreased by 1 (min 1),
         /// the call waits 2 s, and is retried once.  On success the cap is
-        /// increased by 1 back toward the maximum of 9 per 10 s.
+        /// increased by 1 back toward the maximum of 10 per 10 s.
         /// </summary>
         public static async Task<ProcessOutcome> ProcessAsync(
             string txId,
@@ -493,6 +493,56 @@ namespace BitFossilIndexer
             {
                 return false;
             }
+        }
+
+        /// <summary>
+        /// Returns <c>true</c> when the API response indicates a partial or corrupted
+        /// root: a <c>Signature</c> value is present (non-empty string) but the
+        /// <c>Signed</c> flag is explicitly <c>false</c>.  Both the root-level JSON
+        /// object and the nested <c>Output</c> object are checked.
+        /// Such folders should be removed so that incomplete build results are never
+        /// displayed.
+        /// </summary>
+        internal static bool IsPartialRoot(string body)
+        {
+            if (string.IsNullOrWhiteSpace(body)) return false;
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(body);
+                var root = doc.RootElement;
+                if (HasSignatureButNotSigned(root)) return true;
+
+                // Also check inside the nested "Output" object if present.
+                if (root.TryGetProperty("Output", out System.Text.Json.JsonElement output) &&
+                    output.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                    HasSignatureButNotSigned(output))
+                    return true;
+
+                return false;
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Returns <c>true</c> when <paramref name="el"/> contains a non-empty
+        /// <c>Signature</c> string AND a <c>Signed</c> property whose value is
+        /// the boolean <c>false</c>.
+        /// </summary>
+        private static bool HasSignatureButNotSigned(System.Text.Json.JsonElement el)
+        {
+            bool hasSignature =
+                el.TryGetProperty("Signature", out System.Text.Json.JsonElement sig) &&
+                sig.ValueKind == System.Text.Json.JsonValueKind.String &&
+                !string.IsNullOrEmpty(sig.GetString());
+
+            bool signedIsFalse =
+                el.TryGetProperty("Signed", out System.Text.Json.JsonElement signed) &&
+                signed.ValueKind == System.Text.Json.JsonValueKind.False;
+
+            return hasSignature && signedIsFalse;
         }
     }
 }
