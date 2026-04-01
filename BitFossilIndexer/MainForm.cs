@@ -12,6 +12,7 @@ namespace BitFossilIndexer
     {
         private const string DefaultRootPath     = @"C:\bitfossil\ApertusMain\root";
         private const string AlternativeRootPath = @"C:\bitfossil\root";
+        private const string DefaultP2fkRootPath = @"C:\p2fk.io\root";
 
         // ── run-state ──────────────────────────────────────────────────────────
         private CancellationTokenSource? _cts;
@@ -260,6 +261,14 @@ namespace BitFossilIndexer
                 return;
             }
 
+            string p2fkRootPath = txtP2fkRoot.Text.Trim();
+            if (string.IsNullOrEmpty(p2fkRootPath))
+            {
+                MessageBox.Show("Please enter a p2fk.io root folder path.", "BitFossil Indexer",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
             var enabledAtStart = GetEnabledChains();
             if (enabledAtStart.Count == 0)
             {
@@ -291,7 +300,7 @@ namespace BitFossilIndexer
 
             try
             {
-                await RunIndexingAsync(rootPath, _cts.Token);
+                await RunIndexingAsync(rootPath, p2fkRootPath, _cts.Token);
             }
             catch (OperationCanceledException)
             {
@@ -358,9 +367,20 @@ namespace BitFossilIndexer
                 txtRoot.Text = dlg.SelectedPath;
         }
 
+        private void btnBrowseP2fk_Click(object sender, EventArgs e)
+        {
+            using var dlg = new FolderBrowserDialog
+            {
+                Description  = "Select p2fk.io API root folder",
+                SelectedPath = txtP2fkRoot.Text
+            };
+            if (dlg.ShowDialog() == DialogResult.OK)
+                txtP2fkRoot.Text = dlg.SelectedPath;
+        }
+
         // ── core indexing loop ────────────────────────────────────────────────
 
-        private async Task RunIndexingAsync(string rootPath, CancellationToken ct)
+        private async Task RunIndexingAsync(string rootPath, string p2fkRootPath, CancellationToken ct)
         {
             string[] folders = Directory.GetDirectories(rootPath);
 
@@ -460,15 +480,23 @@ namespace BitFossilIndexer
                     if (TransactionProcessor.IsPartialRoot(result.ResponseBody))
                     {
                         AppendLog("        ⚠ ", ClrYellow, bold: true);
-                        AppendLine("Partial root detected (signature present, signed=false) — removing folder.", ClrYellow);
-                        try
+                        AppendLine("Partial root detected (signature present, signed=false) — removing p2fk.io folder.", ClrYellow);
+                        string p2fkFolder = Path.Combine(p2fkRootPath, txId);
+                        if (Directory.Exists(p2fkFolder))
                         {
-                            Directory.Delete(folder, recursive: true);
-                            AppendLine($"        🗑  Removed: {folder}", ClrMuted);
+                            try
+                            {
+                                Directory.Delete(p2fkFolder, recursive: true);
+                                AppendLine($"        🗑  Removed: {p2fkFolder}", ClrMuted);
+                            }
+                            catch (Exception delEx)
+                            {
+                                AppendLine($"        ✘  Could not remove p2fk.io folder: {delEx.Message}", ClrRed);
+                            }
                         }
-                        catch (Exception delEx)
+                        else
                         {
-                            AppendLine($"        ✘  Could not remove folder: {delEx.Message}", ClrRed);
+                            AppendLine($"        ℹ  No p2fk.io folder to remove: {p2fkFolder}", ClrMuted);
                         }
                         failed++;
                     }

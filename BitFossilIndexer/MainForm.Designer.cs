@@ -18,6 +18,11 @@ namespace BitFossilIndexer
         private Button btnStart = null!;
         private Button btnClear = null!;
 
+        // p2fk.io root-path row
+        private Label lblP2fkRootLabel = null!;
+        private TextBox txtP2fkRoot = null!;
+        private Button btnBrowseP2fk = null!;
+
         // Chain-filter panel
         private Panel pnlChainFilter = null!;
         private Label lblChainsLabel = null!;
@@ -82,7 +87,7 @@ namespace BitFossilIndexer
             pnlControls = new Panel
             {
                 Dock = DockStyle.Top,
-                Height = 50,
+                Height = 82,
                 BackColor = ClrPanel,
             };
             pnlControls.Paint += (s, e) =>
@@ -158,7 +163,45 @@ namespace BitFossilIndexer
             btnClear.FlatAppearance.BorderColor = ClrMuted;
             btnClear.Click += btnClear_Click;
 
-            pnlControls.Controls.AddRange([lblRootLabel, txtRoot, btnBrowse, btnStart, btnClear]);
+            // ── Row 2: p2fk.io root path ─────────────────────────────────────
+            lblP2fkRootLabel = new Label
+            {
+                Text = "p2fk.io root:",
+                Font = new Font("Segoe UI", 9),
+                ForeColor = ClrMuted,
+                AutoSize = true,
+                Location = new Point(12, 48)
+            };
+
+            txtP2fkRoot = new TextBox
+            {
+                Text = DefaultP2fkRootPath,
+                Font = new Font("Consolas", 9),
+                BackColor = Color.FromArgb(30, 30, 55),
+                ForeColor = ClrWhite,
+                BorderStyle = BorderStyle.FixedSingle,
+                Location = new Point(100, 44),
+                Width = 530,
+                Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top
+            };
+
+            btnBrowseP2fk = new Button
+            {
+                Text = "📂",
+                Font = new Font("Segoe UI", 9),
+                BackColor = Color.FromArgb(40, 40, 70),
+                ForeColor = ClrWhite,
+                FlatStyle = FlatStyle.Flat,
+                Size = new Size(36, 26),
+                Location = new Point(640, 44),
+                Anchor = AnchorStyles.Right | AnchorStyles.Top,
+                Cursor = Cursors.Hand
+            };
+            btnBrowseP2fk.FlatAppearance.BorderColor = ClrMuted;
+            btnBrowseP2fk.Click += btnBrowseP2fk_Click;
+
+            pnlControls.Controls.AddRange([lblRootLabel, txtRoot, btnBrowse, btnStart, btnClear,
+                                           lblP2fkRootLabel, txtP2fkRoot, btnBrowseP2fk]);
             pnlControls.Resize += (s, e) =>
             {
                 int right = pnlControls.ClientSize.Width - 12;
@@ -166,6 +209,9 @@ namespace BitFossilIndexer
                 btnStart.Left = btnClear.Left - btnStart.Width - 8;
                 btnBrowse.Left = btnStart.Left - btnBrowse.Width - 8;
                 txtRoot.Width = btnBrowse.Left - txtRoot.Left - 8;
+                // Row 2: align browse button with the row-1 browse button
+                btnBrowseP2fk.Left = btnBrowse.Left;
+                txtP2fkRoot.Width = btnBrowseP2fk.Left - txtP2fkRoot.Left - 8;
             };
 
             // ── Chain-filter panel ───────────────────────────────────────────
