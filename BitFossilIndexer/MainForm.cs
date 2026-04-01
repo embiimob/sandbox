@@ -290,6 +290,7 @@ namespace BitFossilIndexer
             btnPause.Text      = "⏸  Pause";
             btnPause.BackColor = Color.FromArgb(40, 40, 70);
             btnClear.Enabled   = true;   // allow log reset while running
+            btnCleanP2fk.Enabled = false; // prevent clean-up while indexing
 
             // Disable chain checkboxes while running
             foreach (var cb in new[] { chkBtcTestnet, chkBtcMainnet, chkMzc, chkDog, chkLtc })
@@ -323,6 +324,7 @@ namespace BitFossilIndexer
                 btnPause.Text      = "⏸  Pause";
                 btnPause.BackColor = Color.FromArgb(40, 40, 70);
                 btnClear.Enabled   = true;
+                btnCleanP2fk.Enabled = true; // re-enable clean-up after indexing
 
                 foreach (var cb in new[] { chkBtcTestnet, chkBtcMainnet, chkMzc, chkDog, chkLtc })
                     cb.Enabled = true;
@@ -378,7 +380,122 @@ namespace BitFossilIndexer
                 txtP2fkRoot.Text = dlg.SelectedPath;
         }
 
+        private async void btnCleanP2fk_Click(object sender, EventArgs e)
+        {
+            if (_running)
+            {
+                MessageBox.Show("Stop the indexer before running the clean-up.",
+                    "BitFossil Indexer", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            string p2fkRootPath = txtP2fkRoot.Text.Trim();
+            if (!Directory.Exists(p2fkRootPath))
+            {
+                MessageBox.Show($"p2fk.io root folder not found:\n{p2fkRootPath}",
+                    "BitFossil Indexer", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            if (MessageBox.Show(
+                    "This will scan every subfolder in the p2fk.io root for empty " +
+                    "transaction-ID placeholder files, then delete the p2fk.io " +
+                    "subfolders named after those IDs.\n\n" +
+                    "The folders that contain the placeholder files are kept intact " +
+                    "(they are the final assembled results).\n\nContinue?",
+                    "BitFossil Indexer – Clean p2fk.io",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+                return;
+
+            btnCleanP2fk.Enabled = false;
+            btnStart.Enabled     = false;
+            try
+            {
+                await RunCleanP2fkAsync(p2fkRootPath);
+            }
+            finally
+            {
+                btnCleanP2fk.Enabled = true;
+                btnStart.Enabled     = true;
+            }
+        }
+
         // ── core indexing loop ────────────────────────────────────────────────
+
+        private async Task RunCleanP2fkAsync(string p2fkRootPath)
+        {
+            AppendLine("🧹  Scanning p2fk.io root for empty transaction-ID files…", ClrAccent, bold: true);
+            AppendLine($"    {p2fkRootPath}", ClrMuted);
+            AppendLine(new string('─', 72), ClrMuted);
+            SetStatus("Scanning p2fk.io folders…");
+
+            // Walk every p2fk.io subfolder and collect the names of any zero-byte,
+            // extension-less files whose names look like transaction IDs.
+            // Those files are placeholder references left by multi-chunk builds;
+            // their names tell us which OTHER p2fk.io folders hold the chunk data
+            // that can be deleted.  The containing (parent) folder is the fully
+            // assembled result and must NOT be deleted.
+            var toDelete = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            int scanned  = 0;
+
+            foreach (string folder in Directory.EnumerateDirectories(p2fkRootPath))
+            {
+                scanned++;
+                if (scanned % 100 == 0)
+                {
+                    SetStatus($"Scanning… {scanned} folders checked.");
+                    await Task.Yield();
+                }
+
+                try
+                {
+                    foreach (string txId in TransactionProcessor.GetEmptyTxIdFileNames(folder))
+                        toDelete.Add(txId);
+                }
+                catch (Exception ex)
+                {
+                    AppendLine($"  ⚠  Could not scan {Path.GetFileName(folder)}: {ex.Message}", ClrYellow);
+                }
+            }
+
+            AppendLine($"  Scanned {scanned} folder(s). Found {toDelete.Count} chunk tx-ID(s) to remove.", ClrMuted);
+
+            if (toDelete.Count == 0)
+            {
+                AppendLine("  ✔  Nothing to clean up.", ClrGreen, bold: true);
+                SetStatus("Clean-up complete — nothing to remove.", ClrGreen);
+                return;
+            }
+
+            int removed = 0;
+            int missing = 0;
+            int errors  = 0;
+
+            foreach (string txId in toDelete)
+            {
+                string target = Path.Combine(p2fkRootPath, txId);
+                if (!Directory.Exists(target)) { missing++; continue; }
+
+                try
+                {
+                    Directory.Delete(target, recursive: true);
+                    AppendLine($"  🗑  Removed: {target}", ClrMuted);
+                    removed++;
+                }
+                catch (Exception ex)
+                {
+                    AppendLine($"  ✘  Could not remove {txId}: {ex.Message}", ClrRed);
+                    errors++;
+                }
+            }
+
+            AppendLine(new string('─', 72), ClrMuted);
+            AppendLine(
+                $"  ✔  Done. Removed {removed}, already absent {missing}, error(s) {errors}.",
+                ClrGreen, bold: true);
+            SetStatus($"Clean-up complete. {removed} removed, {errors} error(s).",
+                errors == 0 ? ClrGreen : ClrRed);
+        }
 
         private async Task RunIndexingAsync(string rootPath, string p2fkRootPath, CancellationToken ct)
         {
