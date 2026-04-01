@@ -496,6 +496,46 @@ namespace BitFossilIndexer
         }
 
         /// <summary>
+        /// Returns <c>true</c> when <paramref name="folderPath"/> exists and contains
+        /// at least one empty (zero-byte) file that has no extension and whose name
+        /// matches a transaction-ID pattern (32–64 hexadecimal characters).
+        /// Such files are left behind when a multi-chunk file is only partially built;
+        /// the entire folder should be removed so incomplete results never appear in
+        /// search output.
+        /// </summary>
+        internal static bool ContainsEmptyTxIdFiles(string folderPath)
+        {
+            if (!Directory.Exists(folderPath)) return false;
+            try
+            {
+                foreach (FileInfo fi in new DirectoryInfo(folderPath).EnumerateFiles())
+                {
+                    if (!string.IsNullOrEmpty(fi.Extension)) continue;
+                    if (IsTxIdLike(fi.Name) && fi.Length == 0)
+                        return true;
+                }
+            }
+            catch (IOException) { /* treat as no match */ }
+            return false;
+        }
+
+        /// <summary>
+        /// Returns <c>true</c> when <paramref name="name"/> consists entirely of
+        /// hexadecimal digits and has a length in the range [32, 64], which is
+        /// characteristic of blockchain transaction identifiers.
+        /// </summary>
+        private static bool IsTxIdLike(string name)
+        {
+            if (name.Length < 32 || name.Length > 64) return false;
+            foreach (char c in name)
+            {
+                if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')))
+                    return false;
+            }
+            return true;
+        }
+
+        /// <summary>
         /// Returns <c>true</c> when the API response indicates a partial or corrupted
         /// root: a <c>Signature</c> value is present (non-empty string) but the
         /// <c>Signed</c> flag is explicitly <c>false</c>.  Both the root-level JSON
