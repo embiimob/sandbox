@@ -47,19 +47,19 @@ namespace BitFossilIndexer
     // ──────────────────────────────────────────────────────────────────────────
     // Adaptive sliding-window rate limiter.
     //
-    // The p2fk.io API allows max 10 transactions per 10 seconds.  We use the
-    // full 10 per 10 s and spread calls evenly across the window (1 s apart)
+    // The p2fk.io API allows max 15 transactions per 10 seconds.  We use the
+    // full 15 per 10 s and spread calls evenly across the window (~0.67 s apart)
     // to avoid bursts.
     //
     // When a 429 is received the current cap is *decreased* by 1 (minimum 1).
     // On every successful (non-429) call the cap is *increased* by 1 back
-    // toward the maximum of 10.  This self-regulating oscillation finds the
+    // toward the maximum of 15.  This self-regulating oscillation finds the
     // server's actual limit without ever-growing delays.
     // ──────────────────────────────────────────────────────────────────────────
     internal class RateLimiter
     {
         /// <summary>Maximum calls allowed in the 10-second window.</summary>
-        public const int MaxTps = 10;
+        public const int MaxTps = 15;
 
         /// <summary>Minimum calls allowed in the 10-second window – never
         /// throttle below this.</summary>
