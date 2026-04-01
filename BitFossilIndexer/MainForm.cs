@@ -421,9 +421,17 @@ namespace BitFossilIndexer
                 var enabledChains = GetEnabledChains();
 
                 // Pre-emptively delete the p2fk.io folder for this transaction so the
-                // API rebuild always starts from a clean slate.
+                // API rebuild always starts from a clean slate — but only if the
+                // transaction's chain is actually enabled (or undetectable).  Deleting
+                // for a disabled chain would wipe previously-indexed data that will
+                // never be rebuilt in this run.
                 string p2fkFolder = Path.Combine(p2fkRootPath, txId);
-                if (Directory.Exists(p2fkFolder))
+                ApiTarget? detectedChain = AddressDetector.DetectFromAddFile(folder);
+                if (detectedChain != null && !enabledChains.Contains(detectedChain))
+                {
+                    AppendLine($"        ⊘  Skipping pre-clear — chain {detectedChain.Label} not enabled.", ClrMuted);
+                }
+                else if (Directory.Exists(p2fkFolder))
                 {
                     try
                     {
