@@ -284,12 +284,13 @@ namespace BitFossilIndexer
 
             ResetChainCountLabels();
 
-            btnStart.Text      = "⏹  Stop";
-            btnStart.BackColor = ClrRed;
-            btnPause.Enabled   = true;
-            btnPause.Text      = "⏸  Pause";
-            btnPause.BackColor = Color.FromArgb(40, 40, 70);
-            btnClear.Enabled   = true;   // allow log reset while running
+            btnStart.Text        = "⏹  Stop";
+            btnStart.BackColor   = ClrRed;
+            btnPause.Enabled     = true;
+            btnPause.Text        = "⏸  Pause";
+            btnPause.BackColor   = Color.FromArgb(40, 40, 70);
+            btnClear.Enabled     = true;   // allow log reset while running
+            btnCleanP2fk.Enabled = false;  // no clean while indexing
 
             // Disable chain checkboxes while running
             foreach (var cb in new[] { chkBtcTestnet, chkBtcMainnet, chkMzc, chkDog, chkLtc })
@@ -317,12 +318,13 @@ namespace BitFossilIndexer
                 _running = false;
                 _paused  = false;
 
-                btnStart.Text      = "▶  Start";
-                btnStart.BackColor = ClrGreen;
-                btnPause.Enabled   = false;
-                btnPause.Text      = "⏸  Pause";
-                btnPause.BackColor = Color.FromArgb(40, 40, 70);
-                btnClear.Enabled   = true;
+                btnStart.Text        = "▶  Start";
+                btnStart.BackColor   = ClrGreen;
+                btnPause.Enabled     = false;
+                btnPause.Text        = "⏸  Pause";
+                btnPause.BackColor   = Color.FromArgb(40, 40, 70);
+                btnClear.Enabled     = true;
+                btnCleanP2fk.Enabled = true;  // re-enable after indexing finishes
 
                 foreach (var cb in new[] { chkBtcTestnet, chkBtcMainnet, chkMzc, chkDog, chkLtc })
                     cb.Enabled = true;
@@ -376,6 +378,109 @@ namespace BitFossilIndexer
             };
             if (dlg.ShowDialog() == DialogResult.OK)
                 txtP2fkRoot.Text = dlg.SelectedPath;
+        }
+
+        private async void btnCleanP2fk_Click(object sender, EventArgs e)
+        {
+            if (_running)
+            {
+                MessageBox.Show("Please wait for the current operation to finish.", "BitFossil Indexer",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            string p2fkRootPath = txtP2fkRoot.Text.Trim();
+            if (!Directory.Exists(p2fkRootPath))
+            {
+                MessageBox.Show($"p2fk.io root folder not found:\n{p2fkRootPath}", "BitFossil Indexer",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            btnCleanP2fk.Enabled = false;
+            btnStart.Enabled     = false;
+
+            try
+            {
+                await RunCleanP2fkAsync(p2fkRootPath);
+            }
+            catch (Exception ex)
+            {
+                AppendLine($"\n❌  Unexpected error: {ex.Message}", ClrRed, bold: true);
+                SetStatus("Error.", ClrRed);
+            }
+            finally
+            {
+                btnCleanP2fk.Enabled = true;
+                btnStart.Enabled     = true;
+            }
+        }
+
+        /// <summary>
+        /// Scans every subfolder of <paramref name="p2fkRootPath"/> and deletes any
+        /// that contain empty extension-less files with transaction-ID-like names.
+        /// These folders are partial-build artefacts left behind when a multi-chunk
+        /// file was never fully assembled, and their removal keeps search results clean.
+        /// </summary>
+        private async Task RunCleanP2fkAsync(string p2fkRootPath)
+        {
+            rtbLog.Clear();
+            _logEntryCount = 0;
+
+            AppendLine("🧹  Scanning p2fk.io root for partial-build folders:", ClrAccent, bold: true);
+            AppendLine($"    {p2fkRootPath}", ClrMuted);
+            AppendLine(new string('─', 72), ClrMuted);
+            SetStatus("Scanning p2fk.io root…");
+
+            IEnumerable<string> subfolders;
+            try
+            {
+                subfolders = Directory.EnumerateDirectories(p2fkRootPath);
+            }
+            catch (Exception ex)
+            {
+                AppendLine($"❌  Cannot enumerate p2fk.io root: {ex.Message}", ClrRed, bold: true);
+                SetStatus("Error.", ClrRed);
+                return;
+            }
+
+            int removed = 0;
+            int scanned = 0;
+
+            foreach (string folder in subfolders)
+            {
+                scanned++;
+                string name = Path.GetFileName(folder);
+
+                if (TransactionProcessor.ContainsEmptyTxIdFiles(folder))
+                {
+                    AppendLog("  🗑  ", ClrYellow, bold: true);
+                    AppendLog("Removing partial-build folder: ", ClrYellow);
+                    AppendLine(name, ClrAccent, bold: true);
+                    try
+                    {
+                        Directory.Delete(folder, recursive: true);
+                        removed++;
+                        AppendLine("       ✔  Deleted.", ClrGreen);
+                    }
+                    catch (Exception delEx)
+                    {
+                        AppendLine($"       ✘  Failed: {delEx.Message}", ClrRed);
+                    }
+                    TrackAndTrimLog();
+                }
+
+                // Yield to keep the UI responsive; every 100 folders is sufficient.
+                if (scanned % 100 == 0)
+                    await Task.Yield();
+            }
+
+            AppendLine("\n" + new string('═', 72), ClrAccent);
+            AppendLine(
+                $"  Done!  Scanned {scanned} folder(s), removed {removed} partial-build folder(s).",
+                ClrAccent, bold: true);
+            AppendLine(new string('═', 72), ClrAccent);
+            SetStatus($"Clean complete. {removed} folder(s) removed.", removed > 0 ? ClrGreen : ClrMuted);
         }
 
         // ── core indexing loop ────────────────────────────────────────────────
@@ -544,6 +649,27 @@ namespace BitFossilIndexer
                     AppendLine($"Error: {err}", ClrRed);
                     if (!string.IsNullOrWhiteSpace(result.ResponseBody) && result.ResponseBody != err)
                         AppendLine("          " + result.ResponseBody.Trim(), ClrMuted);
+                }
+
+                // ── Partial-build artefact cleanup ───────────────────────────
+                // After the API populates the p2fk.io folder, check whether it
+                // contains empty extension-less files whose names look like
+                // transaction IDs.  These are left behind when a multi-chunk
+                // file is only partially assembled; removing the folder keeps
+                // search results clean.
+                if (TransactionProcessor.ContainsEmptyTxIdFiles(p2fkFolder))
+                {
+                    AppendLog("        🧹 ", ClrYellow, bold: true);
+                    AppendLine("Partial-build artefacts detected (empty tx-ID files) — removing p2fk.io folder.", ClrYellow);
+                    try
+                    {
+                        Directory.Delete(p2fkFolder, recursive: true);
+                        AppendLine($"        🗑  Removed: {p2fkFolder}", ClrMuted);
+                    }
+                    catch (Exception delEx)
+                    {
+                        AppendLine($"        ✘  Could not remove partial p2fk.io folder: {delEx.Message}", ClrRed);
+                    }
                 }
 
                 done++;
