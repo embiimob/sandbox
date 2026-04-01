@@ -22,6 +22,7 @@ namespace BitFossilIndexer
         private Label lblP2fkRootLabel = null!;
         private TextBox txtP2fkRoot = null!;
         private Button btnBrowseP2fk = null!;
+        private Button btnCleanP2fk = null!;
 
         // Chain-filter panel
         private Panel pnlChainFilter = null!;
@@ -200,8 +201,23 @@ namespace BitFossilIndexer
             btnBrowseP2fk.FlatAppearance.BorderColor = ClrMuted;
             btnBrowseP2fk.Click += btnBrowseP2fk_Click;
 
+            btnCleanP2fk = new Button
+            {
+                Text = "🧹 Clean p2fk.io",
+                Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                BackColor = Color.FromArgb(40, 40, 70),
+                ForeColor = ClrWhite,
+                FlatStyle = FlatStyle.Flat,
+                Size = new Size(120, 26),
+                Location = new Point(686, 44),
+                Anchor = AnchorStyles.Right | AnchorStyles.Top,
+                Cursor = Cursors.Hand
+            };
+            btnCleanP2fk.FlatAppearance.BorderColor = ClrMuted;
+            btnCleanP2fk.Click += btnCleanP2fk_Click;
+
             pnlControls.Controls.AddRange([lblRootLabel, txtRoot, btnBrowse, btnStart, btnClear,
-                                           lblP2fkRootLabel, txtP2fkRoot, btnBrowseP2fk]);
+                                           lblP2fkRootLabel, txtP2fkRoot, btnBrowseP2fk, btnCleanP2fk]);
             pnlControls.Resize += (s, e) =>
             {
                 int right = pnlControls.ClientSize.Width - 12;
@@ -212,6 +228,9 @@ namespace BitFossilIndexer
                 // Row 2: align browse button with the row-1 browse button
                 btnBrowseP2fk.Left = btnBrowse.Left;
                 txtP2fkRoot.Width = btnBrowseP2fk.Left - txtP2fkRoot.Left - 8;
+                // Row 2: align clean button with row-1 start/clear buttons
+                btnCleanP2fk.Left = btnStart.Left;
+                btnCleanP2fk.Width = btnClear.Right - btnStart.Left;
             };
 
             // ── Chain-filter panel ───────────────────────────────────────────

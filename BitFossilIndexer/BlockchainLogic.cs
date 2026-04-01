@@ -544,5 +544,35 @@ namespace BitFossilIndexer
 
             return hasSignature && signedIsFalse;
         }
+
+        /// <summary>
+        /// Enumerates the names of all zero-byte, extension-less files inside
+        /// <paramref name="folderPath"/> whose names match the transaction-ID
+        /// pattern (32–64 hexadecimal characters).
+        /// <para>
+        /// Multi-chunk builds leave empty placeholder files named after each
+        /// constituent chunk's transaction ID inside the parent (assembled)
+        /// p2fk.io folder.  These names identify the chunk folders that can
+        /// be safely deleted while leaving the parent folder intact.
+        /// </para>
+        /// </summary>
+        internal static IEnumerable<string> GetEmptyTxIdFileNames(string folderPath)
+        {
+            foreach (FileInfo fi in new DirectoryInfo(folderPath).EnumerateFiles())
+            {
+                if (!string.IsNullOrEmpty(fi.Extension)) continue;
+                if (fi.Length == 0 && IsTxIdLike(fi.Name))
+                    yield return fi.Name;
+            }
+        }
+
+        /// <summary>
+        /// Returns <c>true</c> when <paramref name="name"/> matches the
+        /// transaction-ID pattern: 32–64 hexadecimal characters with no
+        /// file extension.
+        /// </summary>
+        private static bool IsTxIdLike(string name)
+            => name.Length is >= 32 and <= 64 &&
+               name.All(c => c is (>= '0' and <= '9') or (>= 'a' and <= 'f') or (>= 'A' and <= 'F'));
     }
 }
