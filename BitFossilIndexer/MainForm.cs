@@ -420,6 +420,22 @@ namespace BitFossilIndexer
                 // while running, so this snapshot is always consistent with the UI state.
                 var enabledChains = GetEnabledChains();
 
+                // Pre-emptively delete the p2fk.io folder for this transaction so the
+                // API rebuild always starts from a clean slate.
+                string p2fkFolder = Path.Combine(p2fkRootPath, txId);
+                if (Directory.Exists(p2fkFolder))
+                {
+                    try
+                    {
+                        Directory.Delete(p2fkFolder, recursive: true);
+                        AppendLine($"        🗑  Pre-cleared p2fk.io folder: {p2fkFolder}", ClrMuted);
+                    }
+                    catch (Exception delEx)
+                    {
+                        AppendLine($"        ✘  Could not pre-clear p2fk.io folder: {delEx.Message}", ClrRed);
+                    }
+                }
+
                 ProcessOutcome outcome;
                 try
                 {
@@ -481,7 +497,6 @@ namespace BitFossilIndexer
                     {
                         AppendLog("        ⚠ ", ClrYellow, bold: true);
                         AppendLine("Partial root detected (signature present, signed=false) — removing p2fk.io folder.", ClrYellow);
-                        string p2fkFolder = Path.Combine(p2fkRootPath, txId);
                         if (Directory.Exists(p2fkFolder))
                         {
                             try
